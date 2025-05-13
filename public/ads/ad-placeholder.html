@@ -1,0 +1,204 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Ad Placeholder Generator</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            margin: 0;
+            padding: 20px;
+            background-color: #f5f5f5;
+        }
+        .container {
+            max-width: 800px;
+            margin: 0 auto;
+        }
+        h1 {
+            color: #333;
+        }
+        .instructions {
+            background-color: #fff;
+            padding: 20px;
+            border-radius: 5px;
+            box-shadow: 0 2px 5px rgba(0,0,0,0.1);
+            margin-bottom: 20px;
+        }
+        .ad-generator {
+            background-color: #fff;
+            padding: 20px;
+            border-radius: 5px;
+            box-shadow: 0 2px 5px rgba(0,0,0,0.1);
+        }
+        .form-group {
+            margin-bottom: 15px;
+        }
+        label {
+            display: block;
+            margin-bottom: 5px;
+            font-weight: bold;
+        }
+        input, select {
+            width: 100%;
+            padding: 8px;
+            border: 1px solid #ddd;
+            border-radius: 4px;
+        }
+        button {
+            background-color: #4CAF50;
+            color: white;
+            border: none;
+            padding: 10px 15px;
+            border-radius: 4px;
+            cursor: pointer;
+        }
+        button:hover {
+            background-color: #45a049;
+        }
+        .preview {
+            margin-top: 20px;
+            border: 1px solid #ddd;
+            padding: 10px;
+            background-color: #f9f9f9;
+        }
+        #adCanvas {
+            border: 1px solid #ddd;
+            margin-top: 10px;
+        }
+        .download-btn {
+            margin-top: 10px;
+            background-color: #2196F3;
+        }
+        .download-btn:hover {
+            background-color: #0b7dda;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>Ad Placeholder Generator</h1>
+        
+        <div class="instructions">
+            <h2>Instructions</h2>
+            <p>Use this tool to generate placeholder ad images for your website. Customize the dimensions, colors, and text, then download the image.</p>
+            <p>For the Rillz project, create two portrait-oriented ad images:</p>
+            <ul>
+                <li>ad-portrait-1.jpg - For the Welcome page</li>
+                <li>ad-portrait-2.jpg - For the Pricing page</li>
+            </ul>
+        </div>
+        
+        <div class="ad-generator">
+            <h2>Generate Ad Placeholder</h2>
+            
+            <div class="form-group">
+                <label for="width">Width (px):</label>
+                <input type="number" id="width" value="160" min="50" max="1000">
+            </div>
+            
+            <div class="form-group">
+                <label for="height">Height (px):</label>
+                <input type="number" id="height" value="600" min="50" max="1000">
+            </div>
+            
+            <div class="form-group">
+                <label for="bgColor">Background Color:</label>
+                <input type="color" id="bgColor" value="#4a90e2">
+            </div>
+            
+            <div class="form-group">
+                <label for="textColor">Text Color:</label>
+                <input type="color" id="textColor" value="#ffffff">
+            </div>
+            
+            <div class="form-group">
+                <label for="adText">Ad Text:</label>
+                <input type="text" id="adText" value="Your Ad Here">
+            </div>
+            
+            <div class="form-group">
+                <label for="adType">Ad Type:</label>
+                <select id="adType">
+                    <option value="Special Offer">Special Offer</option>
+                    <option value="Premium Offer">Premium Offer</option>
+                    <option value="Limited Time">Limited Time</option>
+                    <option value="New Product">New Product</option>
+                </select>
+            </div>
+            
+            <button onclick="generateAd()">Generate Ad</button>
+            
+            <div class="preview">
+                <h3>Preview</h3>
+                <canvas id="adCanvas"></canvas>
+                <button class="download-btn" onclick="downloadAd()">Download Image</button>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        // Generate the ad when the page loads
+        window.onload = function() {
+            generateAd();
+        };
+
+        function generateAd() {
+            const width = document.getElementById('width').value;
+            const height = document.getElementById('height').value;
+            const bgColor = document.getElementById('bgColor').value;
+            const textColor = document.getElementById('textColor').value;
+            const adText = document.getElementById('adText').value;
+            const adType = document.getElementById('adType').value;
+            
+            const canvas = document.getElementById('adCanvas');
+            canvas.width = width;
+            canvas.height = height;
+            
+            const ctx = canvas.getContext('2d');
+            
+            // Draw background
+            ctx.fillStyle = bgColor;
+            ctx.fillRect(0, 0, width, height);
+            
+            // Draw border
+            ctx.strokeStyle = '#ffffff';
+            ctx.lineWidth = 2;
+            ctx.strokeRect(5, 5, width - 10, height - 10);
+            
+            // Draw ad type text
+            ctx.fillStyle = textColor;
+            ctx.font = 'bold 16px Arial';
+            ctx.textAlign = 'center';
+            ctx.fillText(adType, width / 2, 30);
+            
+            // Draw main ad text
+            ctx.font = 'bold 24px Arial';
+            ctx.fillText(adText, width / 2, height / 2);
+            
+            // Draw "Advertisement" text
+            ctx.font = '12px Arial';
+            ctx.fillText('Advertisement', width / 2, height - 20);
+            
+            // Draw a simple graphic
+            ctx.beginPath();
+            ctx.arc(width / 2, height / 2 - 60, 30, 0, Math.PI * 2);
+            ctx.fillStyle = textColor;
+            ctx.globalAlpha = 0.3;
+            ctx.fill();
+            ctx.globalAlpha = 1.0;
+        }
+        
+        function downloadAd() {
+            const canvas = document.getElementById('adCanvas');
+            const adType = document.getElementById('adType').value.toLowerCase().replace(' ', '-');
+            
+            // Create a temporary link
+            const link = document.createElement('a');
+            link.download = `ad-${adType}.jpg`;
+            link.href = canvas.toDataURL('image/jpeg', 0.8);
+            link.click();
+        }
+    </script>
+</body>
+</html>
