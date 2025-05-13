@@ -27,6 +27,7 @@ import { Skeleton } from '@/components/ui/skeleton';
 import {
   CreditCard, Check, X, AlertCircle, Shield
 } from 'lucide-vue-next';
+import CardBrandIcon from '@/components/CardBrandIcon.vue';
 
 const breadcrumbs: BreadcrumbItem[] = [
     {
@@ -735,8 +736,8 @@ onMounted(() => {
                 <CardTitle>Payment Methods</CardTitle>
                 <CardDescription>Manage your payment information</CardDescription>
               </div>
-              <Button size="sm" as-child>
-                <a href="/payment/methods">Manage Payment Methods</a>
+              <Button size="sm" @click="() => router.visit(route('payment.methods'))">
+                Manage Payment Methods
               </Button>
             </div>
           </CardHeader>
@@ -747,27 +748,29 @@ onMounted(() => {
             <div v-else-if="subscription && subscription.card_brand" class="border rounded-lg p-4">
               <div class="flex justify-between items-center">
                 <div class="flex items-center">
-                  <div class="h-10 w-10 rounded-full bg-primary/10 flex items-center justify-center mr-3">
-                    <CreditCard class="h-5 w-5 text-primary" />
+                  <div class="mr-3">
+                    <CardBrandIcon :brand="subscription.card_brand" size="md" />
                   </div>
                   <div>
                     <p class="font-medium capitalize">{{ subscription.card_brand }}</p>
                     <p class="text-sm text-muted-foreground">•••• •••• •••• {{ subscription.card_last_four }}</p>
                   </div>
                 </div>
-                <Badge variant="outline">Default</Badge>
+                <Badge variant="outline" class="bg-green-50 text-green-700 border-green-200">Default</Badge>
               </div>
             </div>
             <div v-else class="text-center py-6 border rounded-lg">
-              <div class="mx-auto w-12 h-12 rounded-full bg-muted flex items-center justify-center mb-3">
-                <CreditCard class="h-6 w-6 text-muted-foreground" />
+              <div class="flex justify-center space-x-2 mb-4">
+                <CardBrandIcon brand="visa" />
+                <CardBrandIcon brand="mastercard" />
+                <CardBrandIcon brand="amex" />
               </div>
               <h3 class="text-lg font-medium mb-1">No Payment Methods</h3>
               <p class="text-sm text-muted-foreground mb-4">
                 Add a payment method to subscribe to a plan.
               </p>
-              <Button as-child size="sm">
-                <a href="/payment/methods">Add Payment Method</a>
+              <Button size="sm" @click="() => router.visit(route('payment.methods'))">
+                Add Payment Method
               </Button>
             </div>
           </CardContent>

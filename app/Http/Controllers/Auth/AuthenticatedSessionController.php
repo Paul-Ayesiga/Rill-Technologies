@@ -31,8 +31,29 @@ class AuthenticatedSessionController extends Controller
     {
         $request->authenticate();
 
+        // Update last login timestamp
+        $user = Auth::user();
+        $user->last_login_at = now();
+        $user->save();
+
         $request->session()->regenerate();
 
+        // Get the authenticated user
+        $user = Auth::user();
+
+        // Check if the user has the admin or super-admin role
+        if ($user) {
+            // Get user's roles directly from the database
+            $userRoles = $user->roles()->pluck('name')->toArray();
+
+            // Check if the user has admin or super-admin role
+            if (in_array('admin', $userRoles) || in_array('super-admin', $userRoles)) {
+                // Force redirect to admin dashboard, ignoring intended URL
+                return redirect()->route('admin.dashboard');
+            }
+        }
+
+        // For regular users, use the intended URL or fall back to dashboard
         return redirect()->intended(route('dashboard', absolute: false));
     }
 

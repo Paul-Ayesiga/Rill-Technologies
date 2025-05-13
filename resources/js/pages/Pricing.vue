@@ -1,8 +1,9 @@
 <script setup lang="ts">
 import { useColorMode } from '@vueuse/core';
-import { ref, computed, watch } from 'vue';
+import { ref, computed, watch, onMounted } from 'vue';
 import { toast } from 'vue-sonner';
 import { Head, Link, usePage, router } from '@inertiajs/vue3';
+import axios from 'axios';
 import {
   Card, CardContent, CardDescription, CardFooter, CardHeader, CardTitle
 } from '@/components/ui/card';
@@ -39,7 +40,7 @@ const themeText = computed(() => {
 });
 
 // Handle plan selection
-const handlePlanSelection = (plan) => {
+const handlePlanSelection = (plan: UIPlan) => {
   const planName = plan.name.toLowerCase();
 
   // We'll fetch the price ID from the backend when redirecting
@@ -53,7 +54,7 @@ const handlePlanSelection = (plan) => {
       duration: 5000,
       action: {
         label: 'Contact Sales',
-        onClick: () => window.location.href = 'mailto:Rill Technologies@technologies.com'
+        onClick: () => window.location.href = 'mailto:sales@example.com'
       }
     });
     return;
@@ -107,16 +108,51 @@ setTimeout(() => {
   contentVisible.value = true;
 }, 100);
 
+// Function to fetch plans from the backend
+const fetchPlans = async () => {
+  isLoadingPlans.value = true;
+
+  try {
+    // Fetch plans from the backend using Inertia's built-in axios instance
+    // which already has CSRF token handling set up
+    const response = await axios.get(route('subscription.plans'));
+
+    if (response.data && Array.isArray(response.data)) {
+      stripePlans.value = response.data;
+      console.log('Fetched plans from Stripe:', stripePlans.value);
+    } else {
+      console.warn('Invalid response format from plans API');
+      // Use fallback plans
+    }
+  } catch (error) {
+    console.error('Error fetching plans:', error);
+    toast.error('Error loading plans', {
+      description: 'Could not load pricing plans. Using default pricing information.'
+    });
+    // Use fallback plans on error
+  } finally {
+    isLoadingPlans.value = false;
+  }
+};
+
+// Fetch plans when component is mounted
+onMounted(() => {
+  fetchPlans();
+});
+
 // Billing period state
 const billingPeriod = ref('monthly');
 
-// Pricing plans data
-const plans = [
+// Loading state for plans
+const isLoadingPlans = ref(true);
+
+// Fallback pricing plans data (used if API fetch fails)
+const fallbackPlans = [
   {
     name: 'Starter',
     description: 'Perfect for individuals and small projects',
     monthlyPrice: 29,
-    yearlyPrice: 290,
+    yearlyPrice: 29 * 10, // 10 months for the price of 12 (16.67% discount)
     features: [
       { name: '1 AI Agent', included: true },
       { name: '5,000 interactions per month', included: true },
@@ -137,7 +173,7 @@ const plans = [
     name: 'Professional',
     description: 'For growing businesses and teams',
     monthlyPrice: 79,
-    yearlyPrice: 790,
+    yearlyPrice: 79 * 10, // 10 months for the price of 12 (16.67% discount)
     features: [
       { name: '5 AI Agents', included: true },
       { name: '25,000 interactions per month', included: true },
@@ -158,7 +194,7 @@ const plans = [
     name: 'Enterprise',
     description: 'For large organizations with advanced needs',
     monthlyPrice: 199,
-    yearlyPrice: 1990,
+    yearlyPrice: 199 * 10, // 10 months for the price of 12 (16.67% discount)
     features: [
       { name: 'Unlimited AI Agents', included: true },
       { name: 'Unlimited interactions', included: true },
@@ -176,6 +212,83 @@ const plans = [
     color: 'bg-green-500'
   }
 ];
+
+// Reactive plans data that will be populated from API
+const stripePlans = ref([]);
+
+// Define the plan interface
+interface StripePlan {
+  id: string;
+  name: string;
+  price: string | number;
+  interval: string;
+  currency: string;
+  features?: Array<{name: string, included: boolean}>;
+}
+
+interface UIPlan {
+  id?: string;
+  name: string;
+  description: string;
+  monthlyPrice: number;
+  yearlyPrice: number;
+  interval?: string;
+  currency?: string;
+  features: Array<{name: string, included: boolean}>;
+  cta: string;
+  popular: boolean;
+  color: string;
+}
+
+// Computed property to get the plans to display
+const plans = computed<UIPlan[]>(() => {
+  if (stripePlans.value && stripePlans.value.length > 0) {
+    // Map Stripe plans to the format expected by the UI
+    return stripePlans.value.map((plan: StripePlan) => {
+      // Find matching fallback plan to get description and other UI properties
+      const fallbackPlan = fallbackPlans.find(fp =>
+        fp.name.toLowerCase() === plan.name.toLowerCase()
+      ) || fallbackPlans[0];
+
+      // Calculate yearly price (monthly price * 10 for 2 months free)
+      const monthlyPrice = parseFloat(plan.price as string);
+      const yearlyPrice = monthlyPrice * 10; // 10 months for the price of 12 (16.67% discount)
+
+      return {
+        id: plan.id,
+        name: plan.name,
+        description: fallbackPlan.description,
+        monthlyPrice: monthlyPrice,
+        yearlyPrice: yearlyPrice,
+        interval: plan.interval,
+        currency: plan.currency,
+        features: plan.features || fallbackPlan.features,
+        cta: plan.name.toLowerCase() === 'enterprise' ? 'Contact Sales' : 'Get Started',
+        popular: fallbackPlan.popular,
+        color: fallbackPlan.color
+      };
+    });
+  }
+
+  // Return fallback plans if no Stripe plans are available
+  return fallbackPlans;
+});
+
+// Computed property to calculate the average savings percentage across all plans
+const averageSavings = computed<number>(() => {
+  if (plans.value.length === 0) return 17; // Default value if no plans are available
+
+  // Calculate savings for each plan
+  const savingsPercentages = plans.value.map((plan: UIPlan) =>
+    calculateSavings(plan.monthlyPrice, plan.yearlyPrice)
+  );
+
+  // Calculate the average savings
+  const totalSavings = savingsPercentages.reduce((sum: number, percentage: number) => sum + percentage, 0);
+  const averageSavingsValue = Math.round(totalSavings / savingsPercentages.length);
+
+  return averageSavingsValue;
+});
 
 // FAQ data
 const faqs = [
@@ -385,13 +498,41 @@ const calculateSavings = (monthlyPrice: number, yearlyPrice: number): number => 
             <Tabs v-model="billingPeriod" class="w-full max-w-xs">
               <TabsList class="grid grid-cols-2">
                 <TabsTrigger value="monthly">Monthly</TabsTrigger>
-                <TabsTrigger value="yearly">Yearly (Save 20%)</TabsTrigger>
+                <TabsTrigger value="yearly">Yearly (Save {{ averageSavings }}%)</TabsTrigger>
               </TabsList>
             </Tabs>
           </div>
 
           <!-- Pricing Cards -->
-          <div class="grid md:grid-cols-3 gap-8 max-w-6xl mx-auto">
+          <div v-if="isLoadingPlans" class="grid md:grid-cols-3 gap-8 max-w-6xl mx-auto">
+            <!-- Loading Skeleton -->
+            <div v-for="i in 3" :key="i" class="relative">
+              <Card class="h-full flex flex-col animate-pulse">
+                <CardHeader>
+                  <div class="flex items-center justify-center w-12 h-12 rounded-full mb-4 bg-gray-300 dark:bg-gray-700"></div>
+                  <div class="h-6 bg-gray-300 dark:bg-gray-700 rounded w-1/3 mb-2"></div>
+                  <div class="h-4 bg-gray-200 dark:bg-gray-800 rounded w-2/3"></div>
+                </CardHeader>
+                <CardContent class="flex-grow">
+                  <div class="mb-6">
+                    <div class="h-8 bg-gray-300 dark:bg-gray-700 rounded w-1/2 mb-2"></div>
+                    <div class="h-4 bg-gray-200 dark:bg-gray-800 rounded w-1/3"></div>
+                  </div>
+                  <div class="space-y-3">
+                    <div v-for="j in 5" :key="j" class="flex items-start">
+                      <div class="rounded-full bg-gray-300 dark:bg-gray-700 p-1 mr-2 h-6 w-6"></div>
+                      <div class="h-4 bg-gray-200 dark:bg-gray-800 rounded w-3/4"></div>
+                    </div>
+                  </div>
+                </CardContent>
+                <CardFooter>
+                  <div class="h-10 bg-gray-300 dark:bg-gray-700 rounded w-full"></div>
+                </CardFooter>
+              </Card>
+            </div>
+          </div>
+
+          <div v-else class="grid md:grid-cols-3 gap-8 max-w-6xl mx-auto">
             <div v-for="(plan, index) in plans" :key="index" class="relative">
               <!-- Popular Badge -->
               <div v-if="plan.popular" class="absolute -top-4 left-0 right-0 flex justify-center">

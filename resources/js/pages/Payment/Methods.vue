@@ -17,6 +17,24 @@ import { Skeleton } from '@/components/ui/skeleton';
 import {
   CreditCard, Shield, Trash2, Check, Plus
 } from 'lucide-vue-next';
+import CardBrandIcon from '@/components/CardBrandIcon.vue';
+
+// Define breadcrumbs
+const breadcrumbs = [
+  {
+    title: 'Dashboard',
+    href: route('dashboard')
+  },
+  {
+    title: 'Billing',
+    href: route('billing')
+  },
+  {
+    title: 'Payment Methods',
+    href: route('payment.methods'),
+    current: true
+  }
+];
 
 // Define props
 const props = defineProps<{
@@ -32,6 +50,7 @@ const isLoading = ref(false);
 const showAddPaymentDialog = ref(false);
 const showDeleteDialog = ref(false);
 const selectedPaymentMethod = ref(null);
+const cardErrors = ref('');
 
 // Forms
 const addPaymentForm = useForm({
@@ -51,7 +70,7 @@ const addPaymentMethod = () => {
   // In a real implementation, you would use Stripe.js to create a payment method
   // and then submit the form with the payment method ID
   addPaymentForm.payment_method = 'pm_card_visa'; // This is a test payment method
-  
+
   addPaymentForm.post(route('payment.methods.store'), {
     onSuccess: () => {
       showAddPaymentDialog.value = false;
@@ -59,7 +78,7 @@ const addPaymentMethod = () => {
         description: 'Your payment method has been added successfully.'
       });
     },
-    onError: (errors) => {
+    onError: (errors: any) => {
       toast.error('Error adding payment method', {
         description: errors.error || 'Please try again.'
       });
@@ -67,14 +86,14 @@ const addPaymentMethod = () => {
   });
 };
 
-const confirmDeletePaymentMethod = (paymentMethodId) => {
+const confirmDeletePaymentMethod = (paymentMethodId: string) => {
   selectedPaymentMethod.value = paymentMethodId;
   showDeleteDialog.value = true;
 };
 
 const deletePaymentMethod = () => {
   deletePaymentForm.payment_method = selectedPaymentMethod.value;
-  
+
   deletePaymentForm.delete(route('payment.methods.destroy'), {
     onSuccess: () => {
       showDeleteDialog.value = false;
@@ -82,7 +101,7 @@ const deletePaymentMethod = () => {
         description: 'Your payment method has been removed successfully.'
       });
     },
-    onError: (errors) => {
+    onError: (errors: any) => {
       toast.error('Error removing payment method', {
         description: errors.error || 'Please try again.'
       });
@@ -90,16 +109,16 @@ const deletePaymentMethod = () => {
   });
 };
 
-const setDefaultPaymentMethod = (paymentMethodId) => {
+const setDefaultPaymentMethod = (paymentMethodId: string) => {
   defaultPaymentForm.payment_method = paymentMethodId;
-  
+
   defaultPaymentForm.put(route('payment.methods.default'), {
     onSuccess: () => {
       toast.success('Default payment method updated', {
         description: 'Your default payment method has been updated successfully.'
       });
     },
-    onError: (errors) => {
+    onError: (errors: any) => {
       toast.error('Error updating default payment method', {
         description: errors.error || 'Please try again.'
       });
@@ -109,15 +128,17 @@ const setDefaultPaymentMethod = (paymentMethodId) => {
 </script>
 
 <template>
-  <AppLayout>
+  <AppLayout :breadcrumbs="breadcrumbs">
     <Head title="Payment Methods" />
-    
-    <div class="container py-6">
-      <div class="mb-6">
-        <h1 class="text-2xl font-bold">Payment Methods</h1>
-        <p class="text-muted-foreground">Manage your payment methods</p>
+
+    <div class="flex h-full flex-1 flex-col gap-4 p-4">
+      <div class="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4 mb-2">
+        <div>
+          <h1 class="text-3xl font-bold">Payment Methods</h1>
+          <p class="text-muted-foreground">Manage your payment information</p>
+        </div>
       </div>
-      
+
       <Card>
         <CardHeader>
           <div class="flex justify-between items-center">
@@ -136,35 +157,36 @@ const setDefaultPaymentMethod = (paymentMethodId) => {
             <Skeleton class="h-[100px] w-full" />
           </div>
           <div v-else-if="paymentMethods && paymentMethods.length > 0" class="space-y-4">
-            <div v-for="method in paymentMethods" :key="method.id" class="border rounded-lg p-4">
-              <div class="flex justify-between items-center">
+            <div v-for="method in paymentMethods" :key="method.id" class="border rounded-lg p-4 hover:shadow-md transition-all duration-200">
+              <div class="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4">
                 <div class="flex items-center">
-                  <div class="h-10 w-16 bg-gradient-to-br from-blue-500 to-purple-600 rounded-md flex items-center justify-center mr-3">
-                    <CreditCard class="h-5 w-5 text-white" />
+                  <div class="mr-4">
+                    <CardBrandIcon :brand="method.brand" size="lg" />
                   </div>
                   <div>
                     <div class="flex items-center">
-                      <p class="font-medium capitalize">{{ method.brand }}</p>
-                      <Badge v-if="method.is_default" variant="outline" class="ml-2">Default</Badge>
+                      <p class="font-medium text-lg capitalize">{{ method.brand }}</p>
+                      <Badge v-if="method.is_default" variant="outline" class="ml-2 bg-green-50 text-green-700 border-green-200">Default</Badge>
                     </div>
-                    <p class="text-sm text-muted-foreground">•••• {{ method.last4 }} • Expires {{ method.exp_month }}/{{ method.exp_year }}</p>
+                    <p class="text-sm text-muted-foreground mt-1">•••• {{ method.last4 }} • Expires {{ method.exp_month }}/{{ method.exp_year }}</p>
                   </div>
                 </div>
-                <div class="flex items-center gap-2">
-                  <Button 
+                <div class="flex items-center gap-2 ml-auto sm:ml-0">
+                  <Button
                     v-if="!method.is_default"
-                    variant="outline" 
+                    variant="outline"
                     size="sm"
                     @click="setDefaultPaymentMethod(method.id)"
                     :class="{ 'opacity-50 cursor-not-allowed': defaultPaymentForm.processing }"
+                    class="border-green-200 text-green-700 hover:bg-green-50 hover:text-green-800"
                   >
                     <Check class="h-4 w-4 mr-2" />
                     Make Default
                   </Button>
-                  <Button 
-                    variant="outline" 
+                  <Button
+                    variant="outline"
                     size="sm"
-                    class="text-red-500 hover:bg-red-50"
+                    class="text-red-500 hover:bg-red-50 hover:text-red-600 border-red-200"
                     @click="confirmDeletePaymentMethod(method.id)"
                   >
                     <Trash2 class="h-4 w-4" />
@@ -173,15 +195,22 @@ const setDefaultPaymentMethod = (paymentMethodId) => {
               </div>
             </div>
           </div>
-          <div v-else class="text-center py-8">
-            <div class="mx-auto w-12 h-12 rounded-full bg-muted flex items-center justify-center mb-3">
-              <CreditCard class="h-6 w-6 text-muted-foreground" />
+          <div v-else class="text-center py-12 border rounded-lg">
+            <div class="flex justify-center space-x-2 mb-4">
+              <CardBrandIcon brand="visa" />
+              <CardBrandIcon brand="mastercard" />
+              <CardBrandIcon brand="amex" />
             </div>
-            <h3 class="text-lg font-medium mb-1">No payment methods</h3>
-            <p class="text-sm text-muted-foreground mb-4">
-              Add a payment method to manage your subscriptions.
+            <h3 class="text-xl font-medium mb-2">No Payment Methods</h3>
+            <p class="text-sm text-muted-foreground mb-6 max-w-md mx-auto">
+              Add a payment method to manage your subscriptions and billing information. Your payment details are securely processed by Stripe.
             </p>
-            <Button @click="showAddPaymentDialog = true">
+            <Button
+              @click="showAddPaymentDialog = true"
+              class="px-6"
+              size="lg"
+            >
+              <Plus class="h-4 w-4 mr-2" />
               Add Payment Method
             </Button>
           </div>
@@ -201,59 +230,76 @@ const setDefaultPaymentMethod = (paymentMethodId) => {
         </CardFooter>
       </Card>
     </div>
-    
+
     <!-- Add Payment Method Dialog -->
     <Dialog v-model:open="showAddPaymentDialog">
       <DialogContent class="sm:max-w-[500px]">
         <DialogHeader>
           <DialogTitle>Add Payment Method</DialogTitle>
           <DialogDescription>
-            Add a new credit card or payment method.
+            Add a new credit card or payment method to your account.
           </DialogDescription>
         </DialogHeader>
         <div class="py-4">
-          <div class="space-y-4">
-            <div class="grid gap-2">
-              <Label for="card-number">Card Number</Label>
-              <Input id="card-number" placeholder="•••• •••• •••• ••••" />
-            </div>
-            
-            <div class="grid grid-cols-2 gap-4">
-              <div class="grid gap-2">
-                <Label for="expiry">Expiry Date</Label>
-                <Input id="expiry" placeholder="MM/YY" />
+          <div class="space-y-6">
+            <!-- Card Element Container -->
+            <div class="border rounded-lg p-5 bg-card">
+              <div class="mb-4">
+                <Label for="card-element" class="text-sm font-medium mb-2 block">Card Information</Label>
+                <div id="card-element" class="p-4 border rounded-md bg-background min-h-[40px]"></div>
+                <div v-if="cardErrors" class="text-sm text-red-500 mt-2">
+                  {{ cardErrors }}
+                </div>
               </div>
-              <div class="grid gap-2">
-                <Label for="cvc">CVC</Label>
-                <Input id="cvc" placeholder="•••" />
+
+              <div class="grid gap-4">
+                <div class="grid gap-2">
+                  <Label for="name">Name on Card</Label>
+                  <Input id="name" placeholder="John Doe" />
+                </div>
+
+                <div class="grid gap-2">
+                  <Label for="address">Billing Address</Label>
+                  <Input id="address" placeholder="123 Main St" />
+                </div>
+
+                <div class="grid grid-cols-2 gap-4">
+                  <div class="grid gap-2">
+                    <Label for="city">City</Label>
+                    <Input id="city" placeholder="New York" />
+                  </div>
+                  <div class="grid gap-2">
+                    <Label for="zip">ZIP / Postal Code</Label>
+                    <Input id="zip" placeholder="10001" />
+                  </div>
+                </div>
               </div>
             </div>
-            
-            <div class="grid gap-2">
-              <Label for="name">Name on Card</Label>
-              <Input id="name" placeholder="John Doe" />
+
+            <div class="flex items-center bg-green-50 dark:bg-green-900/20 rounded-lg p-4 border border-green-100 dark:border-green-900/30">
+              <Shield class="h-5 w-5 text-green-500 mr-3 flex-shrink-0" />
+              <div>
+                <h4 class="text-sm font-medium text-green-800 dark:text-green-300">Secure Payment Processing</h4>
+                <p class="text-xs text-green-700 dark:text-green-400 mt-1">
+                  Your payment information is securely processed by Stripe. We never store your full card details on our servers.
+                </p>
+              </div>
             </div>
-          </div>
-          
-          <div class="flex items-center mt-4 bg-muted/30 rounded-lg p-3">
-            <Shield class="h-5 w-5 text-green-500 mr-2" />
-            <p class="text-xs text-muted-foreground">
-              Your payment information is securely processed by Stripe.
-            </p>
           </div>
         </div>
         <DialogFooter>
           <Button @click="showAddPaymentDialog = false" variant="outline">Cancel</Button>
-          <Button 
+          <Button
             @click="addPaymentMethod"
             :class="{ 'opacity-50 cursor-not-allowed': addPaymentForm.processing }"
           >
+            <Plus class="h-4 w-4 mr-2" />
             Add Payment Method
           </Button>
         </DialogFooter>
       </DialogContent>
     </Dialog>
-    
+
     <!-- Delete Payment Method Dialog -->
     <Dialog v-model:open="showDeleteDialog">
       <DialogContent class="sm:max-w-[500px]">
@@ -263,26 +309,37 @@ const setDefaultPaymentMethod = (paymentMethodId) => {
             Are you sure you want to remove this payment method?
           </DialogDescription>
         </DialogHeader>
-        <div class="py-4">
-          <div class="bg-destructive/5 border border-destructive/20 rounded-lg p-4">
+        <div class="py-6">
+          <div class="bg-red-50 dark:bg-red-900/20 border border-red-100 dark:border-red-900/30 rounded-lg p-4 mb-4">
             <div class="flex items-start">
-              <Trash2 class="h-5 w-5 text-destructive mr-2 mt-0.5" />
+              <Trash2 class="h-5 w-5 text-red-500 mr-3 mt-0.5 flex-shrink-0" />
               <div>
-                <h4 class="text-sm font-medium">Warning</h4>
-                <p class="text-xs text-muted-foreground mt-1">
+                <h4 class="text-sm font-medium text-red-800 dark:text-red-300">Warning</h4>
+                <p class="text-sm text-red-700 dark:text-red-400 mt-1">
                   This action cannot be undone. If this is your default payment method, your subscription may be affected.
                 </p>
               </div>
             </div>
           </div>
+
+          <div class="border rounded-lg p-4">
+            <p class="text-sm font-medium mb-2">What happens when you remove a payment method:</p>
+            <ul class="text-sm text-muted-foreground space-y-2 ml-5 list-disc">
+              <li>The payment method will be removed from your account</li>
+              <li>If this is your default payment method, you'll need to set a new one</li>
+              <li>Any active subscriptions using this payment method may be affected</li>
+            </ul>
+          </div>
         </div>
-        <DialogFooter>
-          <Button @click="showDeleteDialog = false" variant="outline">Cancel</Button>
-          <Button 
+        <DialogFooter class="gap-2">
+          <Button @click="showDeleteDialog = false" variant="outline" size="lg">Cancel</Button>
+          <Button
             variant="destructive"
+            size="lg"
             @click="deletePaymentMethod"
             :class="{ 'opacity-50 cursor-not-allowed': deletePaymentForm.processing }"
           >
+            <Trash2 class="h-4 w-4 mr-2" />
             Remove Payment Method
           </Button>
         </DialogFooter>

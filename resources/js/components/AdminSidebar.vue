@@ -5,7 +5,11 @@ import NavAdmin from '@/components/NavAdmin.vue';
 import { Sidebar, SidebarContent, SidebarFooter, SidebarHeader, SidebarMenu, SidebarMenuButton, SidebarMenuItem } from '@/components/ui/sidebar';
 import { type NavItem } from '@/types';
 import { Link } from '@inertiajs/vue3';
-import { BookOpen, Folder, LayoutGrid, Bot, CreditCard } from 'lucide-vue-next';
+import {
+    BookOpen, Folder, LayoutGrid, Bot, CreditCard,
+    Users, ShieldCheck, Settings, BellRing,
+    ImageIcon, BarChart3
+} from 'lucide-vue-next';
 import AppLogo from './AppLogo.vue';
 
 const mainNavItems: NavItem[] = [
@@ -14,7 +18,36 @@ const mainNavItems: NavItem[] = [
         href: '/admin/dashboard',
         icon: LayoutGrid,
     },
-   
+    {
+        title: 'Customers',
+        href: '/admin/customers',
+        icon: Users,
+    },
+    {
+        title: 'Subscriptions',
+        href: '/admin/subscriptions',
+        icon: CreditCard,
+    },
+    {
+        title: 'Roles & Permissions',
+        href: '/admin/roles',
+        icon: ShieldCheck,
+    },
+    {
+        title: 'Advertisements',
+        href: '/admin/ads',
+        icon: ImageIcon,
+    },
+    {
+        title: 'Analytics',
+        href: '/admin/analytics',
+        icon: BarChart3,
+    },
+    {
+        title: 'Settings',
+        href: '/admin/settings',
+        icon: Settings,
+    },
 ];
 
 const footerNavItems: NavItem[] = [

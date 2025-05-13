@@ -15,11 +15,14 @@ Route::get('/pricing', function () {
     return Inertia::render('Pricing');
 })->name('pricing');
 
+// Public subscription routes (no auth required)
+Route::get('/subscription/plans', [SubscriptionController::class, 'getPublicPlans'])->name('subscription.plans');
+
 Route::middleware(['auth', 'verified'])->group(function () {
-    Route::get('dashboard', [AgentController::class, 'index'])->name('dashboard');
+    Route::get('dashboard', [AgentController::class, 'index'])->middleware('redirect.if.admin')->name('dashboard');
 
     // Agents page
-    Route::get('agents', [AgentController::class, 'index'])->name('agents');
+    Route::get('agents', [AgentController::class, 'index'])->middleware('redirect.if.admin')->name('agents');
 
     // Billing page
     Route::get('billing', function () {
@@ -53,15 +56,17 @@ Route::middleware(['auth', 'verified'])->group(function () {
             'subscription' => $formattedSubscription,
             'plans' => $plans
         ]);
-    })->name('billing');
+    })->middleware('redirect.if.admin')->name('billing');
 
-    // Agent routes
-    Route::post('agents', [AgentController::class, 'store'])->name('agents.store');
-    Route::put('agents/{agent}', [AgentController::class, 'update'])->name('agents.update');
-    Route::delete('agents/{agent}', [AgentController::class, 'destroy'])->name('agents.destroy');
-    Route::put('agents/{agent}/toggle-status', [AgentController::class, 'toggleStatus'])->name('agents.toggle-status');
+    // Agent routes - protected by subscription
+    Route::middleware('subscription')->group(function () {
+        Route::post('agents', [AgentController::class, 'store'])->name('agents.store');
+        Route::put('agents/{agent}', [AgentController::class, 'update'])->name('agents.update');
+        Route::delete('agents/{agent}', [AgentController::class, 'destroy'])->name('agents.destroy');
+        Route::put('agents/{agent}/toggle-status', [AgentController::class, 'toggleStatus'])->name('agents.toggle-status');
+    });
 
-    // Subscription routes
+    // Subscription routes (auth required)
     Route::prefix('subscription')->name('subscription.')->group(function () {
         Route::get('/', [SubscriptionController::class, 'index'])->name('index');
         Route::post('/subscribe', [SubscriptionController::class, 'subscribe'])->name('subscribe');

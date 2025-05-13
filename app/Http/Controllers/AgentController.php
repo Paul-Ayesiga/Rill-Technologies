@@ -41,9 +41,14 @@ class AgentController extends Controller
         // Determine which page to render based on the route
         $routeName = request()->route()->getName();
 
+        // Check if user has an active subscription or is on trial
+        $hasActiveSubscription = $this->userHasActiveSubscription($user);
+
         if ($routeName === 'agents') {
             return Inertia::render('Agents', [
                 'agents' => $agents,
+                'subscription' => $subscription,
+                'hasActiveSubscription' => $hasActiveSubscription,
             ]);
         }
 
@@ -354,12 +359,41 @@ class AgentController extends Controller
      */
     public function store(Request $request)
     {
+        $user = Auth::user();
+
+        // First check if the user has an active subscription
+        if (!$this->userHasActiveSubscription($user)) {
+            if ($request->wantsJson()) {
+                return response()->json([
+                    'message' => "You need an active subscription to create agents.",
+                    'subscription_required' => true
+                ], 402); // 402 Payment Required
+            }
+
+            return redirect()->route('billing')->with('error', "You need an active subscription to create agents. Please subscribe to a plan.");
+        }
+
+        // Then check subscription limits based on plan
+        $agentLimit = $this->getAgentLimit($user);
+        $currentAgentCount = $user->agents()->count();
+
+        if ($currentAgentCount >= $agentLimit) {
+            if ($request->wantsJson()) {
+                return response()->json([
+                    'message' => "You've reached your plan's limit of {$agentLimit} agents. Please upgrade your plan to create more agents.",
+                    'limit_reached' => true
+                ], 403);
+            }
+
+            return redirect()->route('billing')->with('error', "You've reached your plan's limit of {$agentLimit} agents. Please upgrade your plan to create more agents.");
+        }
+
         $validated = $request->validate([
             'name' => 'required|string|max:255',
             'type' => 'required|string|max:255',
         ]);
 
-        $agent = Auth::user()->agents()->create([
+        $agent = $user->agents()->create([
             'name' => $validated['name'],
             'type' => $validated['type'],
             'status' => 'training',
@@ -371,6 +405,9 @@ class AgentController extends Controller
         // Load the agent with its relationships
         $agent->load('user');
 
+        // Store the agent in the session for the frontend
+        session()->put('agent', $agent);
+
         // Set the last_active attribute
         $agent->append('last_active');
 
@@ -381,10 +418,116 @@ class AgentController extends Controller
         // Redirect to agents page if the request came from there
         $referer = $request->headers->get('referer');
         if ($referer && str_contains($referer, '/agents')) {
-            return redirect()->route('agents');
+            return redirect()->route('agents')->with('agent', $agent);
         }
 
-        return redirect()->route('dashboard');
+        return redirect()->route('dashboard')->with('agent', $agent);
+    }
+
+    /**
+     * Determine if the user has an active subscription or is on trial.
+     *
+     * @param  \App\Models\User  $user
+     * @return bool
+     */
+    private function userHasActiveSubscription($user): bool
+    {
+        // Check if user is on trial
+        if ($user->onTrial()) {
+            return true;
+        }
+
+        // Get the subscription
+        $subscription = $user->subscription();
+
+        // No subscription
+        if (!$subscription) {
+            return false;
+        }
+
+        // Check if the subscription is on grace period (canceled but still valid until the end date)
+        // This is the key check for canceled subscriptions that are still running
+        if ($subscription->onGracePeriod()) {
+            return true;
+        }
+
+        // Check the Stripe status directly
+        if (isset($subscription->stripe_status)) {
+            // Valid statuses that allow access
+            $validStatuses = ['active', 'trialing'];
+
+            // If the status is one of the valid ones, allow access
+            if (in_array($subscription->stripe_status, $validStatuses)) {
+                return true;
+            }
+        }
+
+        // Fallback to the Laravel Cashier methods if stripe_status is not available
+
+        // Check if the subscription is active (not expired) and not canceled
+        if ($subscription->active() && !$subscription->canceled()) {
+            return true;
+        }
+
+        // If we get here, the subscription is not valid
+        return false;
+    }
+
+    /**
+     * Get the agent limit based on the user's subscription plan.
+     *
+     * @param  \App\Models\User  $user
+     * @return int
+     */
+    private function getAgentLimit($user)
+    {
+        // Default limit for free users or unknown plans
+        $defaultLimit = 0;
+
+        // If user is on trial, give them the Professional plan limit
+        if ($user->onTrial()) {
+            return 5; // Professional plan limit
+        }
+
+        // If user doesn't have an active subscription, return the default limit
+        if (!$this->userHasActiveSubscription($user)) {
+            return $defaultLimit;
+        }
+
+        // Get the subscription
+        $subscription = $user->subscription();
+        if (!$subscription) {
+            return $defaultLimit;
+        }
+
+        try {
+            // Get the plan details from Stripe
+            \Stripe\Stripe::setApiKey(config('cashier.secret'));
+            $stripePlan = \Stripe\Price::retrieve([
+                'id' => $subscription->stripe_price,
+                'expand' => ['product']
+            ]);
+
+            // Get the product name
+            $productName = $stripePlan->product->name ?? '';
+            $productNameLower = strtolower($productName);
+
+            // Determine the limit based on the plan name
+            if (strpos($productNameLower, 'starter') !== false) {
+                return 1; // Starter plan: 1 agent
+            } elseif (strpos($productNameLower, 'professional') !== false) {
+                return 5; // Professional plan: 5 agents
+            } elseif (strpos($productNameLower, 'enterprise') !== false) {
+                return PHP_INT_MAX; // Enterprise plan: unlimited agents
+            }
+
+            // Fallback to default limit if plan name doesn't match
+            return $defaultLimit;
+
+        } catch (\Exception $e) {
+            Log::error('Error determining agent limit: ' . $e->getMessage());
+            return $defaultLimit;
+        }
     }
 
     /**
@@ -483,9 +626,13 @@ class AgentController extends Controller
         // Redirect to agents page if the request came from there
         $referer = $request->headers->get('referer');
         if ($referer && str_contains($referer, '/agents')) {
+            // Use flash data to pass the agent to the frontend
+            session()->flash('agent', $agent);
             return redirect()->route('agents');
         }
 
+        // Use flash data to pass the agent to the frontend
+        session()->flash('agent', $agent);
         return redirect()->route('dashboard');
     }
 

@@ -9,8 +9,8 @@ use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Carbon;
 use Inertia\Inertia;
 use Laravel\Cashier\Exceptions\IncompletePayment;
+use Laravel\Cashier\Subscription;
 use Stripe\Exception\CardException;
-use Stripe\PaymentMethod;
 use Stripe\Stripe;
 
 class SubscriptionController extends Controller
@@ -172,6 +172,181 @@ class SubscriptionController extends Controller
         }
 
         return back()->withErrors(['error' => 'Your subscription cannot be resumed.']);
+    }
+
+    /**
+     * Get available subscription plans for public display.
+     * This endpoint doesn't require authentication.
+     *
+     * @return \Illuminate\Http\JsonResponse
+     */
+    public function getPublicPlans()
+    {
+        try {
+            // Set Stripe API key
+            \Stripe\Stripe::setApiKey(config('cashier.secret'));
+
+            // Fetch prices from Stripe
+            $prices = \Stripe\Price::all([
+                'active' => true,
+                'limit' => 10,
+                'expand' => ['data.product']
+            ]);
+
+            // Process the prices into a format suitable for the frontend
+            $plans = [];
+
+            foreach ($prices->data as $price) {
+                // Skip if product is not active
+                if (!$price->product->active) {
+                    continue;
+                }
+
+                // Get the plan name from the product
+                $name = $price->product->name;
+
+                // Get the price details
+                $amount = $price->unit_amount / 100; // Convert from cents to dollars
+                $currency = strtolower($price->currency);
+                $interval = $price->recurring->interval;
+
+                // Get features from product metadata or use defaults
+                $features = [];
+
+                // Default features based on plan name
+                if (strtolower($name) === 'starter') {
+                    $features = [
+                        ['name' => '1 AI Agent', 'included' => true],
+                        ['name' => '5,000 interactions per month', 'included' => true],
+                        ['name' => 'Basic analytics', 'included' => true],
+                        ['name' => 'Email support', 'included' => true],
+                        ['name' => 'File uploads (up to 50MB)', 'included' => true],
+                        ['name' => 'Website training', 'included' => true],
+                        ['name' => 'API access', 'included' => false],
+                        ['name' => 'Custom branding', 'included' => false],
+                        ['name' => 'Advanced analytics', 'included' => false],
+                        ['name' => 'Priority support', 'included' => false],
+                    ];
+                } elseif (strtolower($name) === 'professional') {
+                    $features = [
+                        ['name' => '5 AI Agents', 'included' => true],
+                        ['name' => '25,000 interactions per month', 'included' => true],
+                        ['name' => 'Advanced analytics', 'included' => true],
+                        ['name' => 'Priority email support', 'included' => true],
+                        ['name' => 'File uploads (up to 200MB)', 'included' => true],
+                        ['name' => 'Website training', 'included' => true],
+                        ['name' => 'API access', 'included' => true],
+                        ['name' => 'Custom branding', 'included' => true],
+                        ['name' => 'Team collaboration', 'included' => false],
+                        ['name' => '24/7 phone support', 'included' => false],
+                    ];
+                } elseif (strtolower($name) === 'enterprise') {
+                    $features = [
+                        ['name' => 'Unlimited AI Agents', 'included' => true],
+                        ['name' => 'Unlimited interactions', 'included' => true],
+                        ['name' => 'Advanced analytics & reporting', 'included' => true],
+                        ['name' => '24/7 priority support', 'included' => true],
+                        ['name' => 'Unlimited file uploads', 'included' => true],
+                        ['name' => 'Website & API training', 'included' => true],
+                        ['name' => 'Advanced API access', 'included' => true],
+                        ['name' => 'Custom branding & white labeling', 'included' => true],
+                        ['name' => 'Team collaboration', 'included' => true],
+                        ['name' => 'Dedicated account manager', 'included' => true],
+                    ];
+                }
+
+                // Add the plan to the list
+                $plans[] = [
+                    'id' => $price->id,
+                    'name' => $name,
+                    'price' => $amount,
+                    'interval' => $interval,
+                    'currency' => $currency,
+                    'features' => $features
+                ];
+            }
+
+            // If no plans were found, use fallback plans
+            if (empty($plans)) {
+                $plans = $this->getFallbackPlans();
+            }
+
+            return response()->json($plans);
+        } catch (\Exception $e) {
+            Log::error('Error fetching public plans: ' . $e->getMessage());
+
+            // Return fallback plans on error
+            $fallbackPlans = $this->getFallbackPlans();
+            return response()->json($fallbackPlans);
+        }
+    }
+
+    /**
+     * Get fallback plans when Stripe API fails.
+     *
+     * @return array
+     */
+    private function getFallbackPlans()
+    {
+        return [
+            [
+                'id' => 'price_fallback_starter',
+                'name' => 'Starter',
+                'price' => 29,
+                'interval' => 'month',
+                'currency' => 'usd',
+                'features' => [
+                    ['name' => '1 AI Agent', 'included' => true],
+                    ['name' => '5,000 interactions per month', 'included' => true],
+                    ['name' => 'Basic analytics', 'included' => true],
+                    ['name' => 'Email support', 'included' => true],
+                    ['name' => 'File uploads (up to 50MB)', 'included' => true],
+                    ['name' => 'Website training', 'included' => true],
+                    ['name' => 'API access', 'included' => false],
+                    ['name' => 'Custom branding', 'included' => false],
+                    ['name' => 'Advanced analytics', 'included' => false],
+                    ['name' => 'Priority support', 'included' => false],
+                ]
+            ],
+            [
+                'id' => 'price_fallback_professional',
+                'name' => 'Professional',
+                'price' => 79,
+                'interval' => 'month',
+                'currency' => 'usd',
+                'features' => [
+                    ['name' => '5 AI Agents', 'included' => true],
+                    ['name' => '25,000 interactions per month', 'included' => true],
+                    ['name' => 'Advanced analytics', 'included' => true],
+                    ['name' => 'Priority email support', 'included' => true],
+                    ['name' => 'File uploads (up to 200MB)', 'included' => true],
+                    ['name' => 'Website training', 'included' => true],
+                    ['name' => 'API access', 'included' => true],
+                    ['name' => 'Custom branding', 'included' => true],
+                    ['name' => 'Team collaboration', 'included' => false],
+                    ['name' => '24/7 phone support', 'included' => false],
+                ]
+            ],
+            [
+                'id' => 'price_fallback_enterprise',
+                'name' => 'Enterprise',
+                'price' => 199,
+                'interval' => 'month',
+                'currency' => 'usd',
+                'features' => [
+                    ['name' => 'Unlimited AI Agents', 'included' => true],
+                    ['name' => 'Unlimited interactions', 'included' => true],
+                    ['name' => 'Advanced analytics & reporting', 'included' => true],
+                    ['name' => '24/7 priority support', 'included' => true],
+                    ['name' => 'Unlimited file uploads', 'included' => true],
+                    ['name' => 'Website & API training', 'included' => true],
+                    ['name' => 'Advanced API access', 'included' => true],
+                    ['name' => 'Custom branding & white labeling', 'included' => true],
+                    ['name' => 'Team collaboration', 'included' => true],
+                    ['name' => 'Dedicated account manager', 'included' => true],
+                ]
+            ]
+        ];
     }
 
     /**

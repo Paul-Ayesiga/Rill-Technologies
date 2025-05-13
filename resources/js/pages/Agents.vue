@@ -4,6 +4,7 @@ import { type BreadcrumbItem } from '@/types';
 import { Head, useForm } from '@inertiajs/vue3';
 import { ref, computed, watchEffect, onMounted } from 'vue';
 import { toast } from 'vue-sonner';
+import { router } from '@inertiajs/vue3';
 
 import {
   Card, CardContent, CardDescription, CardFooter, CardHeader, CardTitle
@@ -25,8 +26,10 @@ import {
   DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger
 } from '@/components/ui/dropdown-menu';
 import {
-  Bot, Plus, Upload, MoreVertical, Edit, Play, Pause, Zap, CheckIcon, LineChart
+  Bot, Plus, Upload, MoreVertical, Edit, Play, Pause, Zap, CheckIcon, LineChart,
+  Rocket, CreditCard
 } from 'lucide-vue-next';
+import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert';
 
 const breadcrumbs: BreadcrumbItem[] = [
     {
@@ -53,13 +56,85 @@ interface Agent {
   user_id?: number;
 }
 
-// Get agents from props
+// Get agents and subscription status from props
 const props = defineProps<{
   agents?: Agent[];
+  subscription?: any;
+  hasActiveSubscription?: boolean;
+  flash?: {
+    agent?: Agent;
+    error?: string;
+    message?: string;
+  };
 }>();
 
 // Convert agents from props to reactive ref
 const agents = ref<Agent[]>(props.agents || []);
+
+// Check if there's a new agent in the flash data
+onMounted(() => {
+  // Check for agent in session flash data
+  const flashAgent = window.sessionStorage.getItem('agent');
+  if (flashAgent) {
+    try {
+      const newAgent = JSON.parse(flashAgent);
+      console.log('New agent from session storage:', newAgent);
+
+      // Check if the agent already exists in the local state
+      const existingIndex = agents.value.findIndex((a: Agent) => a.id === newAgent.id);
+
+      if (existingIndex !== -1) {
+        // Update existing agent
+        agents.value[existingIndex] = newAgent;
+      } else {
+        // Add new agent to the beginning of the array
+        agents.value.unshift(newAgent);
+      }
+
+      // Show a success toast
+      toast.success('Agent created successfully', {
+        description: `${newAgent.name} has been created and is ready for training.`
+      });
+
+      // Clear the flash data
+      window.sessionStorage.removeItem('agent');
+    } catch (error) {
+      console.error('Error parsing agent from session storage:', error);
+    }
+  }
+
+  // Check for agent in props flash data
+  else if (props.flash?.agent) {
+    const newAgent = props.flash.agent;
+    console.log('New agent from flash props:', newAgent);
+
+    // Check if the agent already exists in the local state
+    const existingIndex = agents.value.findIndex((a: Agent) => a.id === newAgent.id);
+
+    if (existingIndex !== -1) {
+      // Update existing agent
+      agents.value[existingIndex] = newAgent;
+    } else {
+      // Add new agent to the beginning of the array
+      agents.value.unshift(newAgent);
+    }
+
+    // Show a success toast
+    toast.success('Agent created successfully', {
+      description: `${newAgent.name} has been created and is ready for training.`
+    });
+
+    // Store the agent in session storage for page reloads
+    window.sessionStorage.setItem('agent', JSON.stringify(newAgent));
+  }
+
+  // Check if there's an error message in the flash data
+  if (props.flash?.error) {
+    toast.error('Error', {
+      description: props.flash.error
+    });
+  }
+});
 
 // Training progress tracking for agents
 const agentProgress = ref<Record<string, number>>({});
@@ -200,17 +275,69 @@ onMounted(() => {
 
 // Methods
 const createNewAgent = () => {
+  // Check if user has an active subscription
+  if (!props.hasActiveSubscription) {
+    showNewAgentDialog.value = false;
+    toast.error('Subscription required', {
+      description: 'You need an active subscription to create agents. Please upgrade your plan.'
+    });
+    router.visit(route('billing'));
+    return;
+  }
+
   form.post(route('agents.store'), {
-    onSuccess: (response: any) => {
-      // Add the new agent to the local state
-      if (response?.data?.agent) {
-        agents.value.unshift(response.data.agent);
+    preserveScroll: true,
+    onSuccess: (page) => {
+      // Get the agent from the response
+      const newAgent = page?.props?.flash?.agent || null;
+
+      if (newAgent) {
+        console.log('New agent created:', newAgent);
+
+        // Check if the agent already exists in the local state
+        const existingIndex = agents.value.findIndex((a: Agent) => a.id === newAgent.id);
+
+        if (existingIndex !== -1) {
+          // Update existing agent
+          agents.value[existingIndex] = newAgent;
+        } else {
+          // Add new agent to the beginning of the array
+          agents.value.unshift(newAgent);
+        }
+      } else {
+        console.warn('Agent created but not returned in response');
+        // Refresh the page to get the updated list
+        router.reload({ only: ['agents'] });
       }
 
       showNewAgentDialog.value = false;
       form.reset();
       toast.success('Agent created successfully', {
         description: `${form.name} has been created and is ready for training.`
+      });
+    },
+    onError: (errors: any) => {
+      // Check if this is a subscription required error
+      if (errors.subscription_required) {
+        toast.error('Subscription required', {
+          description: errors.message || 'You need an active subscription to create agents. Please upgrade your plan.'
+        });
+        router.visit(route('billing'));
+        return;
+      }
+
+      // Check if this is a subscription limit error
+      if (errors.limit_reached) {
+        toast.error('Agent limit reached', {
+          description: errors.message || 'You have reached your plan\'s agent limit. Please upgrade to create more agents.'
+        });
+        router.visit(route('billing'));
+        return;
+      }
+
+      // Generic error
+      toast.error('Error creating agent', {
+        description: errors.message || 'There was a problem creating your agent. Please try again.'
       });
     }
   });
@@ -229,9 +356,20 @@ const openEditDialog = (agent: Agent) => {
 const updateAgent = () => {
   if (!selectedAgent.value) return;
 
+  // Check if user has an active subscription
+  if (!props.hasActiveSubscription) {
+    showEditAgentDialog.value = false;
+    toast.error('Subscription required', {
+      description: 'You need an active subscription to update agents. Please upgrade your plan.'
+    });
+    router.visit(route('billing'));
+    return;
+  }
+
   const agentId = selectedAgent.value.id;
 
   editForm.put(route('agents.update', { agent: agentId }), {
+    preserveScroll: true,
     onSuccess: (response: any) => {
       // Update the agent in the local state
       if (response?.data?.agent) {
@@ -281,6 +419,21 @@ const updateAgent = () => {
       toast.success('Agent updated successfully', {
         description: `${editForm.name} has been updated.`
       });
+    },
+    onError: (errors: any) => {
+      // Check if this is a subscription required error
+      if (errors.subscription_required) {
+        toast.error('Subscription required', {
+          description: errors.message || 'You need an active subscription to update agents. Please upgrade your plan.'
+        });
+        router.visit(route('billing'));
+        return;
+      }
+
+      // Generic error
+      toast.error('Error updating agent', {
+        description: errors.message || 'There was a problem updating your agent. Please try again.'
+      });
     }
   });
 };
@@ -305,6 +458,16 @@ const handleFileChange = (event: Event) => {
 };
 
 const startTraining = () => {
+  // Check if user has an active subscription
+  if (!props.hasActiveSubscription) {
+    showTrainingDialog.value = false;
+    toast.error('Subscription required', {
+      description: 'You need an active subscription to train agents. Please upgrade your plan.'
+    });
+    router.visit(route('billing'));
+    return;
+  }
+
   // Logic to start training would go here
   showTrainingDialog.value = false;
 
@@ -337,7 +500,17 @@ const startTraining = () => {
 
 // Toggle agent status (active/paused)
 const toggleAgentStatus = (agent: Agent) => {
+  // Check if user has an active subscription
+  if (!props.hasActiveSubscription) {
+    toast.error('Subscription required', {
+      description: 'You need an active subscription to manage agents. Please upgrade your plan.'
+    });
+    router.visit(route('billing'));
+    return;
+  }
+
   useForm().put(route('agents.toggle-status', { agent: agent.id }), {
+    preserveScroll: true,
     onSuccess: (response: any) => {
       const action = agent.status === 'active' ? 'paused' : 'activated';
 
@@ -368,6 +541,21 @@ const toggleAgentStatus = (agent: Agent) => {
       toast.success(`Agent ${action}`, {
         description: `${agent.name} has been ${action}.`
       });
+    },
+    onError: (errors: any) => {
+      // Check if this is a subscription required error
+      if (errors.subscription_required) {
+        toast.error('Subscription required', {
+          description: errors.message || 'You need an active subscription to manage agents. Please upgrade your plan.'
+        });
+        router.visit(route('billing'));
+        return;
+      }
+
+      // Generic error
+      toast.error('Error updating agent status', {
+        description: errors.message || 'There was a problem updating the agent status. Please try again.'
+      });
     }
   });
 };
@@ -382,10 +570,21 @@ const openDeleteDialog = (agent: Agent) => {
 const deleteAgent = () => {
   if (!selectedAgent.value) return;
 
+  // Check if user has an active subscription
+  if (!props.hasActiveSubscription) {
+    showDeleteDialog.value = false;
+    toast.error('Subscription required', {
+      description: 'You need an active subscription to manage agents. Please upgrade your plan.'
+    });
+    router.visit(route('billing'));
+    return;
+  }
+
   const agentId = selectedAgent.value.id;
   const agentName = selectedAgent.value.name;
 
   useForm().delete(route('agents.destroy', { agent: agentId }), {
+    preserveScroll: true,
     onSuccess: () => {
       // Remove the agent from the local state
       const index = agents.value.findIndex((a: Agent) => a.id === agentId);
@@ -396,6 +595,21 @@ const deleteAgent = () => {
       showDeleteDialog.value = false;
       toast.success('Agent deleted', {
         description: `${agentName} has been permanently deleted.`
+      });
+    },
+    onError: (errors: any) => {
+      // Check if this is a subscription required error
+      if (errors.subscription_required) {
+        toast.error('Subscription required', {
+          description: errors.message || 'You need an active subscription to manage agents. Please upgrade your plan.'
+        });
+        router.visit(route('billing'));
+        return;
+      }
+
+      // Generic error
+      toast.error('Error deleting agent', {
+        description: errors.message || 'There was a problem deleting your agent. Please try again.'
       });
     }
   });
@@ -509,6 +723,8 @@ const formatLastActive = (agent: Agent | null): string => {
         </div>
       </div>
 
+
+
       <!-- Agents List -->
       <Card>
         <CardHeader>
@@ -520,6 +736,45 @@ const formatLastActive = (agent: Agent | null): string => {
             <Skeleton class="h-20 w-full" />
             <Skeleton class="h-20 w-full" />
             <Skeleton class="h-20 w-full" />
+          </div>
+          <div v-else-if="!agents.length && !hasActiveSubscription" class="text-center py-8">
+            <div class="mx-auto w-16 h-16 rounded-full bg-amber-100 dark:bg-amber-900/30 flex items-center justify-center mb-4">
+              <Rocket class="h-8 w-8 text-amber-600 dark:text-amber-400" />
+            </div>
+            <h3 class="text-lg font-medium mb-2">Unlock AI Agents</h3>
+            <p class="text-sm text-muted-foreground mb-6 max-w-md mx-auto">
+              Subscribe to a plan to create and manage powerful AI agents that can automate tasks and provide intelligent assistance.
+            </p>
+            <Alert class="max-w-md mx-auto mb-6 text-left border-2 border-amber-400 dark:border-amber-600 bg-amber-50 dark:bg-amber-900/20">
+              <Rocket class="h-4 w-4 text-amber-600 dark:text-amber-400" />
+              <AlertTitle class="text-amber-800 dark:text-amber-300">Ready to get started?</AlertTitle>
+              <AlertDescription class="text-amber-700 dark:text-amber-400">
+                Choose a subscription plan that fits your needs and start creating AI agents today.
+              </AlertDescription>
+            </Alert>
+            <Button @click="() => router.visit(route('billing'))" class="px-6 bg-purple-600 hover:bg-purple-700 text-white font-medium shadow-sm">
+              View Subscription Plans
+            </Button>
+          </div>
+          <div v-else-if="!agents.length" class="text-center py-8">
+            <div class="mx-auto w-16 h-16 rounded-full bg-primary/10 flex items-center justify-center mb-4">
+              <Bot class="h-8 w-8 text-primary" />
+            </div>
+            <h3 class="text-lg font-medium mb-2">No Agents Yet</h3>
+            <p class="text-sm text-muted-foreground mb-6 max-w-md mx-auto">
+              Create your first AI agent to start automating tasks and providing intelligent assistance.
+            </p>
+            <Alert class="max-w-md mx-auto mb-6 text-left">
+              <Rocket class="h-4 w-4 text-primary" />
+              <AlertTitle>Get Started</AlertTitle>
+              <AlertDescription>
+                Your subscription is active! You can now create AI agents to help with your tasks.
+              </AlertDescription>
+            </Alert>
+            <Button @click="showNewAgentDialog = true" class="px-6">
+              <Plus class="mr-2 h-4 w-4" />
+              Create Your First Agent
+            </Button>
           </div>
           <div v-else class="space-y-4">
             <div v-for="agent in agents" :key="agent.id" class="flex flex-col sm:flex-row sm:items-center justify-between border rounded-lg p-4">
