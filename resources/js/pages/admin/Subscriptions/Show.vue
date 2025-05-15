@@ -11,7 +11,7 @@ import {
   TableHeader, TableRow
 } from '@/components/ui/table';
 import {
-  ArrowLeft, User, CreditCard, FileText,
+  ArrowLeft, User, CreditCard, FileText, FileDown,
   CheckCircle, AlertTriangle, Ban, Zap, RefreshCw
 } from 'lucide-vue-next';
 import { toast } from 'vue-sonner';
@@ -68,19 +68,49 @@ const props = defineProps<{
 const cancelDialogOpen = ref(false);
 const cancelType = ref('end_of_period');
 const isCancelling = ref(false);
+const isGeneratingInvoice = ref<Record<string, boolean>>({});
 
 // Function to format currency
-function formatCurrency(amount: number): string {
-  return new Intl.NumberFormat('en-US', {
-    style: 'currency',
-    currency: 'USD',
-  }).format(amount / 100);
+function formatCurrency(amount: number | string | null | undefined): string {
+  // If amount is already a formatted string with a currency symbol (e.g., '$20')
+  if (typeof amount === 'string' && amount.startsWith('$')) {
+    return amount;
+  }
+
+  // Check if amount is a valid number or can be converted to one
+  if (amount === null || amount === undefined) {
+    return '$0.00';
+  }
+
+  try {
+    // If amount is a string that doesn't start with '$', try to convert it to a number
+    let numericAmount: number;
+    if (typeof amount === 'string') {
+      // Remove any commas and convert to number
+      numericAmount = parseFloat(amount.replace(/,/g, ''));
+    } else {
+      numericAmount = amount;
+    }
+
+    // Check if conversion resulted in a valid number
+    if (isNaN(numericAmount)) {
+      return '$0.00';
+    }
+
+    return new Intl.NumberFormat('en-US', {
+      style: 'currency',
+      currency: 'USD',
+    }).format(numericAmount / 100);
+  } catch (error) {
+    console.error('Error formatting currency:', error, 'Amount:', amount);
+    return '$0.00';
+  }
 }
 
 // Function to cancel subscription
 function cancelSubscription() {
   isCancelling.value = true;
-  
+
   router.post(route('admin.subscriptions.cancel', props.subscription.id), {
     cancel_type: cancelType.value
   }, {
@@ -122,6 +152,29 @@ function syncSubscription() {
       toast.error('Failed to sync subscription with Stripe', {
         description: errors.message || 'There was an error syncing the subscription.'
       });
+    }
+  });
+}
+
+// Function to generate invoice PDF
+function generateInvoicePdf(invoiceId: string) {
+  // Set the loading state for this invoice
+  isGeneratingInvoice.value[invoiceId] = true;
+
+  // Navigate to the invoice generation route
+  router.visit(route('invoice.generate', invoiceId), {
+    preserveState: true,
+    onSuccess: () => {
+      toast.success('Invoice generation started', {
+        description: 'Your invoice is being generated. You will be notified when it is ready for download.'
+      });
+      isGeneratingInvoice.value[invoiceId] = false;
+    },
+    onError: (errors: any) => {
+      toast.error('Failed to generate invoice', {
+        description: errors.message || 'There was an error generating the invoice.'
+      });
+      isGeneratingInvoice.value[invoiceId] = false;
     }
   });
 }
@@ -212,7 +265,7 @@ const breadcrumbs: BreadcrumbItem[] = [
                   <div class="space-y-4">
                     <div>
                       <h3 class="text-sm font-medium text-muted-foreground">Plan</h3>
-                      <p>{{ subscription.name }}</p>
+                      <p>{{ subscription.name || 'Unknown Plan' }}</p>
                     </div>
                     <div>
                       <h3 class="text-sm font-medium text-muted-foreground">Status</h3>
@@ -253,7 +306,7 @@ const breadcrumbs: BreadcrumbItem[] = [
                       Cancel Subscription
                     </Button>
                   </div>
-                  <div v-if="subscription.stripe_status === 'canceled' && !subscription.ends_at" class="w-full">
+                  <div v-if="subscription.on_grace_period" class="w-full">
                     <Button variant="outline" class="w-full" @click="resumeSubscription">
                       <CheckCircle class="h-4 w-4 mr-2" />
                       Resume Subscription
@@ -305,6 +358,7 @@ const breadcrumbs: BreadcrumbItem[] = [
                       <TableHead>Date</TableHead>
                       <TableHead>Amount</TableHead>
                       <TableHead>Status</TableHead>
+                      <TableHead>Actions</TableHead>
                     </TableRow>
                   </TableHeader>
                   <TableBody>
@@ -317,9 +371,23 @@ const breadcrumbs: BreadcrumbItem[] = [
                           {{ invoice.status }}
                         </Badge>
                       </TableCell>
+                      <TableCell>
+                        <div class="flex space-x-2">
+                          <Button
+                            variant="outline"
+                            size="sm"
+                            @click="generateInvoicePdf(invoice.id)"
+                            :disabled="isGeneratingInvoice[invoice.id]"
+                          >
+                            <FileDown class="h-4 w-4 mr-1" />
+                            <span v-if="isGeneratingInvoice[invoice.id]">Processing...</span>
+                            <span v-else>Download PDF</span>
+                          </Button>
+                        </div>
+                      </TableCell>
                     </TableRow>
                     <TableRow v-if="invoices.length === 0">
-                      <TableCell colspan="4" class="text-center py-4">
+                      <TableCell colspan="5" class="text-center py-4">
                         No invoices found for this subscription
                       </TableCell>
                     </TableRow>

@@ -784,7 +784,7 @@ const breadcrumbs: BreadcrumbItem[] = [
 
     <!-- View Role Modal -->
     <Dialog v-model:open="viewRoleModalOpen">
-      <DialogContent class="sm:max-w-[600px]">
+      <DialogContent class="sm:max-w-[600px] max-h-[90vh] overflow-y-auto">
         <DialogHeader>
           <DialogTitle>Role Details: {{ selectedRole?.name }}</DialogTitle>
           <DialogDescription>
@@ -861,7 +861,7 @@ const breadcrumbs: BreadcrumbItem[] = [
 
     <!-- Edit Role Modal -->
     <Dialog v-model:open="editRoleModalOpen">
-      <DialogContent class="sm:max-w-[600px]">
+      <DialogContent class="sm:max-w-[600px] max-h-[90vh] overflow-y-auto">
         <DialogHeader>
           <DialogTitle>Edit Role: {{ selectedRole?.name }}</DialogTitle>
           <DialogDescription>
@@ -953,7 +953,7 @@ const breadcrumbs: BreadcrumbItem[] = [
 
     <!-- Create Permission Modal -->
     <Dialog v-model:open="createPermissionModalOpen">
-      <DialogContent class="sm:max-w-[600px]">
+      <DialogContent class="sm:max-w-[600px] max-h-[90vh] overflow-y-auto">
         <DialogHeader>
           <DialogTitle>Create New Permission</DialogTitle>
           <DialogDescription>
@@ -1051,7 +1051,7 @@ const breadcrumbs: BreadcrumbItem[] = [
 
     <!-- View Permission Modal -->
     <Dialog v-model:open="viewPermissionModalOpen">
-      <DialogContent class="sm:max-w-[600px]">
+      <DialogContent class="sm:max-w-[600px] max-h-[90vh] overflow-y-auto">
         <DialogHeader>
           <DialogTitle>Permission Details: {{ selectedPermission?.name }}</DialogTitle>
           <DialogDescription>
@@ -1108,7 +1108,7 @@ const breadcrumbs: BreadcrumbItem[] = [
 
     <!-- Edit Permission Modal -->
     <Dialog v-model:open="editPermissionModalOpen">
-      <DialogContent class="sm:max-w-[600px]">
+      <DialogContent class="sm:max-w-[600px] max-h-[90vh] overflow-y-auto">
         <DialogHeader>
           <DialogTitle>Edit Permission: {{ selectedPermission?.name }}</DialogTitle>
           <DialogDescription>

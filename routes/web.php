@@ -1,6 +1,7 @@
 <?php
 
 use App\Http\Controllers\AgentController;
+use App\Http\Controllers\InvoiceController;
 use App\Http\Controllers\PaymentController;
 use App\Http\Controllers\StripeWebhookController;
 use App\Http\Controllers\SubscriptionController;
@@ -41,8 +42,12 @@ Route::middleware(['auth', 'verified'])->group(function () {
             $paymentMethod = $user->defaultPaymentMethod();
         }
 
-        if ($user->subscribed('default')) {
-            $subscription = $user->subscription('default');
+        // Get the user's first subscription or use 'default' as fallback
+        $subscription = $user->subscriptions()->first();
+        $subscriptionType = $subscription ? $subscription->type : 'default';
+
+        if ($user->subscribed($subscriptionType)) {
+            $subscription = $user->subscription($subscriptionType);
             $invoices = $user->invoices();
         }
 
@@ -83,6 +88,20 @@ Route::middleware(['auth', 'verified'])->group(function () {
         Route::put('/methods/default', [PaymentController::class, 'setDefaultPaymentMethod'])->name('methods.default');
         Route::delete('/methods', [PaymentController::class, 'removePaymentMethod'])->name('methods.destroy');
         Route::post('/setup-intent', [PaymentController::class, 'createSetupIntent'])->name('setup-intent');
+    });
+
+    // Invoice routes
+    Route::prefix('invoice')->name('invoice.')->group(function () {
+        Route::get('/generate/{invoiceId}', [InvoiceController::class, 'generate'])->name('generate');
+        Route::get('/download/{path}', [InvoiceController::class, 'download'])->name('download');
+        Route::get('/download-direct/{invoiceId}', [InvoiceController::class, 'downloadDirect'])->name('download-direct');
+    });
+
+    // Notification routes
+    Route::prefix('notifications')->name('notifications.')->group(function () {
+        Route::get('/', [App\Http\Controllers\NotificationController::class, 'getUnreadNotifications'])->name('unread');
+        Route::post('/{id}/read', [App\Http\Controllers\NotificationController::class, 'markAsRead'])->name('mark-read');
+        Route::post('/read-all', [App\Http\Controllers\NotificationController::class, 'markAllAsRead'])->name('mark-all-read');
     });
 });
 

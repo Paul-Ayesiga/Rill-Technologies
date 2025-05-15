@@ -87,34 +87,45 @@ const rowSelection = ref({});
 // Define table columns
 const columns: ColumnDef<Subscription>[] = [
   {
-    accessorKey: 'user.name',
+    id: 'userName',
+    accessorFn: (row: Subscription) => row.user.name,
     header: ({ column }: any) => {
       return h(Button, {
         variant: 'ghost',
         onClick: () => column.toggleSorting(column.getIsSorted() === 'asc'),
       }, () => ['Customer', h(ArrowUpDown, { class: 'ml-2 h-4 w-4' })])
     },
-    cell: ({ row }: any) => h('div', { class: 'font-medium' }, row.getValue('user.name')),
+    cell: ({ row }: any) => h('div', { class: 'font-medium' }, row.getValue('userName')),
   },
   {
-    accessorKey: 'user.email',
+    id: 'userEmail',
+    accessorFn: (row: Subscription) => row.user.email,
     header: ({ column }: any) => {
       return h(Button, {
         variant: 'ghost',
         onClick: () => column.toggleSorting(column.getIsSorted() === 'asc'),
       }, () => ['Email', h(ArrowUpDown, { class: 'ml-2 h-4 w-4' })])
     },
-    cell: ({ row }: any) => h('div', { class: 'lowercase' }, row.getValue('user.email')),
+    cell: ({ row }: any) => h('div', { class: 'lowercase' }, row.getValue('userEmail')),
   },
   {
-    accessorKey: 'name',
+    id: 'planName',
+    accessorFn: (row: Subscription) => {
+      // Debug the row data to see what's available
+      console.log('Row data for plan:', row);
+      return row.name || 'Unknown Plan';
+    },
     header: ({ column }: any) => {
       return h(Button, {
         variant: 'ghost',
         onClick: () => column.toggleSorting(column.getIsSorted() === 'asc'),
       }, () => ['Plan', h(ArrowUpDown, { class: 'ml-2 h-4 w-4' })])
     },
-    cell: ({ row }: any) => h('div', {}, row.getValue('name')),
+    cell: ({ row }: any) => {
+      const planName = row.getValue('planName');
+      console.log('Plan name value:', planName);
+      return h('div', {}, planName);
+    },
   },
   {
     accessorKey: 'stripe_status',
@@ -202,6 +213,10 @@ const table = useVueTable({
 // Watch for changes in the subscriptions prop and update our local data
 watch(() => props.subscriptions, (newSubscriptions: Subscription[] | undefined) => {
   if (newSubscriptions) {
+    // Log the first subscription to see its structure
+    if (newSubscriptions.length > 0) {
+      console.log('First subscription data:', newSubscriptions[0]);
+    }
     subscriptionsData.value = newSubscriptions;
   }
 }, { deep: true });
@@ -287,8 +302,8 @@ const breadcrumbs: BreadcrumbItem[] = [
               <Input
                 class="max-w-sm"
                 placeholder="Filter by customer name..."
-                :model-value="table.getColumn('user.name')?.getFilterValue()?.toString() || ''"
-                @update:model-value="table.getColumn('user.name')?.setFilterValue($event)"
+                :model-value="table.getColumn('userName')?.getFilterValue()?.toString() || ''"
+                @update:model-value="table.getColumn('userName')?.setFilterValue($event)"
               >
                 <template #prefix>
                   <Search class="h-4 w-4 text-gray-400" />
@@ -381,7 +396,7 @@ const breadcrumbs: BreadcrumbItem[] = [
                   </div>
                 </div>
               </template>
-              
+
               <div class="flex items-center justify-end space-x-2 py-4">
                 <div class="flex-1 text-sm text-muted-foreground">
                   {{ table.getFilteredSelectedRowModel().rows.length }} of

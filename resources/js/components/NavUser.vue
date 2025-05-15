@@ -11,6 +11,7 @@ import { usePage } from '@inertiajs/vue3';
 import { BadgeCheck, Bell, ChevronsUpDown, CreditCard, Sun, Moon, Laptop } from 'lucide-vue-next';
 import UserMenuContent from './UserMenuContent.vue';
 import UserInfo from '@/components/UserInfo.vue';
+import NotificationBell from '@/components/NotificationBell.vue';
 import { useColorMode } from '@vueuse/core';
 import { ref, watch } from 'vue';
 import { ToggleGroup, ToggleGroupItem } from '@/components/ui/toggle-group';
@@ -39,6 +40,9 @@ watch(colorMode, (newMode) => {
 
 <template>
     <SidebarMenu>
+        <SidebarMenuItem>
+            <NotificationBell />
+        </SidebarMenuItem>
         <SidebarMenuItem>
             <DropdownMenu>
                 <DropdownMenuTrigger as-child>

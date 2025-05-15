@@ -5,6 +5,7 @@ use App\Http\Controllers\Admin\settings\ProfileController;
 use App\Http\Controllers\Admin\settings\SessionController;
 
 use App\Http\Controllers\Admin\AdminController;
+use App\Http\Controllers\Admin\PlanController;
 use Illuminate\Support\Facades\Route;
 use Inertia\Inertia;
 
@@ -26,6 +27,14 @@ Route::middleware(['auth', 'admin'])->group(function () {
         Route::post('/{id}/cancel', [App\Http\Controllers\Admin\SubscriptionsController::class, 'cancel'])->name('cancel');
         Route::post('/{id}/resume', [App\Http\Controllers\Admin\SubscriptionsController::class, 'resume'])->name('resume');
         Route::post('/{id}/sync', [App\Http\Controllers\Admin\SubscriptionsController::class, 'sync'])->name('sync');
+    });
+
+    // Plans Management
+    Route::prefix('admin/plans')->name('admin.plans.')->group(function () {
+        Route::get('/', [PlanController::class, 'index'])->name('index');
+        Route::post('/', [PlanController::class, 'store'])->name('store');
+        Route::put('/{id}', [PlanController::class, 'update'])->name('update');
+        Route::delete('/{id}', [PlanController::class, 'destroy'])->name('destroy');
     });
 
     // Roles & Permissions Management

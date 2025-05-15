@@ -68,64 +68,20 @@ const props = defineProps<{
   };
 }>();
 
-// Convert agents from props to reactive ref
-const agents = ref<Agent[]>(props.agents || []);
+// Use agents directly from props
+const agents = computed(() => props.agents || []);
 
 // Check if there's a new agent in the flash data
 onMounted(() => {
-  // Check for agent in session flash data
-  const flashAgent = window.sessionStorage.getItem('agent');
-  if (flashAgent) {
-    try {
-      const newAgent = JSON.parse(flashAgent);
-      console.log('New agent from session storage:', newAgent);
-
-      // Check if the agent already exists in the local state
-      const existingIndex = agents.value.findIndex((a: Agent) => a.id === newAgent.id);
-
-      if (existingIndex !== -1) {
-        // Update existing agent
-        agents.value[existingIndex] = newAgent;
-      } else {
-        // Add new agent to the beginning of the array
-        agents.value.unshift(newAgent);
-      }
-
-      // Show a success toast
-      toast.success('Agent created successfully', {
-        description: `${newAgent.name} has been created and is ready for training.`
-      });
-
-      // Clear the flash data
-      window.sessionStorage.removeItem('agent');
-    } catch (error) {
-      console.error('Error parsing agent from session storage:', error);
-    }
-  }
-
   // Check for agent in props flash data
-  else if (props.flash?.agent) {
+  if (props.flash?.agent) {
     const newAgent = props.flash.agent;
     console.log('New agent from flash props:', newAgent);
-
-    // Check if the agent already exists in the local state
-    const existingIndex = agents.value.findIndex((a: Agent) => a.id === newAgent.id);
-
-    if (existingIndex !== -1) {
-      // Update existing agent
-      agents.value[existingIndex] = newAgent;
-    } else {
-      // Add new agent to the beginning of the array
-      agents.value.unshift(newAgent);
-    }
 
     // Show a success toast
     toast.success('Agent created successfully', {
       description: `${newAgent.name} has been created and is ready for training.`
     });
-
-    // Store the agent in session storage for page reloads
-    window.sessionStorage.setItem('agent', JSON.stringify(newAgent));
   }
 
   // Check if there's an error message in the flash data
@@ -140,7 +96,7 @@ onMounted(() => {
 const agentProgress = ref<Record<string, number>>({});
 
 // Animate progress for training agents only
-watchEffect((cleanupFn: (cb: () => void) => void) => {
+watchEffect((onCleanup) => {
   // Create a map to track timers for each agent
   const timers: Record<number, number> = {};
 
@@ -171,21 +127,19 @@ watchEffect((cleanupFn: (cb: () => void) => void) => {
         // Clear the interval as training is complete
         window.clearInterval(timer);
 
-        // Update agent status from 'training' to 'active'
-        const index = agents.value.findIndex((a: Agent) => a.id === agent.id);
-        if (index !== -1) {
-          // Update the agent's status to 'active'
-          agents.value[index] = {
-            ...agents.value[index],
-            status: 'active',
-            last_active_at: new Date().toISOString()
-          };
-
-          // Show a success toast
-          toast.success('Training complete', {
-            description: `${agent.name} has completed training and is now active.`
-          });
-        }
+        // Update agent status from 'training' to 'active' via API
+        router.put(route('agents.update', { agent: agent.id }), {
+          status: 'active'
+        }, {
+          preserveScroll: true,
+          only: ['agents'],
+          onSuccess: () => {
+            // Show a success toast
+            toast.success('Training complete', {
+              description: `${agent.name} has completed training and is now active.`
+            });
+          }
+        });
       } else {
         // Update progress normally
         agentProgress.value[agent.id] = newProgress;
@@ -196,8 +150,8 @@ watchEffect((cleanupFn: (cb: () => void) => void) => {
   });
 
   // Cleanup function to clear all timers
-  cleanupFn(() => {
-    Object.values(timers).forEach(timer => window.clearInterval(timer));
+  onCleanup(() => {
+    Object.values(timers).forEach((timer) => window.clearInterval(timer));
   });
 });
 
@@ -287,27 +241,15 @@ const createNewAgent = () => {
 
   form.post(route('agents.store'), {
     preserveScroll: true,
+    only: ['agents'],
     onSuccess: (page) => {
       // Get the agent from the response
       const newAgent = page?.props?.flash?.agent || null;
 
       if (newAgent) {
         console.log('New agent created:', newAgent);
-
-        // Check if the agent already exists in the local state
-        const existingIndex = agents.value.findIndex((a: Agent) => a.id === newAgent.id);
-
-        if (existingIndex !== -1) {
-          // Update existing agent
-          agents.value[existingIndex] = newAgent;
-        } else {
-          // Add new agent to the beginning of the array
-          agents.value.unshift(newAgent);
-        }
       } else {
         console.warn('Agent created but not returned in response');
-        // Refresh the page to get the updated list
-        router.reload({ only: ['agents'] });
       }
 
       showNewAgentDialog.value = false;
@@ -370,49 +312,27 @@ const updateAgent = () => {
 
   editForm.put(route('agents.update', { agent: agentId }), {
     preserveScroll: true,
-    onSuccess: (response: any) => {
-      // Update the agent in the local state
-      if (response?.data?.agent) {
-        const updatedAgent = response.data.agent;
-        const index = agents.value.findIndex((a: Agent) => a.id === updatedAgent.id);
-        if (index !== -1) {
-          agents.value[index] = updatedAgent;
+    only: ['agents'],
+    onSuccess: (page: any) => {
+      // Get the updated agent from the response
+      const updatedAgent = page?.props?.flash?.agent || null;
 
-          // If status changed to training, initialize progress
-          if (updatedAgent.status === 'training') {
-            agentProgress.value[agentId] = 25;
-          }
-        }
-      } else {
-        // Fallback to manual update if response doesn't contain the updated agent
-        const index = agents.value.findIndex((a: Agent) => a.id === agentId);
-        if (index !== -1) {
-          const now = new Date().toISOString();
-          const oldStatus = agents.value[index].status;
-          const newStatus = editForm.status;
+      // If status changed to training, initialize progress
+      if (updatedAgent && updatedAgent.status === 'training') {
+        agentProgress.value[agentId] = 25;
 
-          // Update the agent in the local state
-          agents.value[index] = {
-            ...agents.value[index],
-            name: editForm.name,
-            type: editForm.type,
-            status: newStatus,
-            // Update last_active_at if status is changing from non-active to active
-            last_active_at: (oldStatus !== 'active' && newStatus === 'active')
-              ? now
-              : agents.value[index].last_active_at
-          };
+        // Show a toast notification
+        toast.info('Training started', {
+          description: `${updatedAgent.name} is now being trained.`
+        });
+      } else if (editForm.status === 'training') {
+        // Fallback if the updated agent is not in the response
+        agentProgress.value[agentId] = 25;
 
-          // If status changed to training, initialize progress
-          if (newStatus === 'training') {
-            agentProgress.value[agentId] = 25;
-
-            // Show a toast notification
-            toast.info('Training started', {
-              description: `${editForm.name} is now being trained.`
-            });
-          }
-        }
+        // Show a toast notification
+        toast.info('Training started', {
+          description: `${editForm.name} is now being trained.`
+        });
       }
 
       showEditAgentDialog.value = false;
@@ -483,18 +403,18 @@ const startTraining = () => {
   // Find the agent that's being trained (assuming it's the selected agent)
   if (selectedAgent.value) {
     const agentId = selectedAgent.value.id;
-    const index = agents.value.findIndex((a: Agent) => a.id === agentId);
 
-    if (index !== -1) {
-      // Update the agent's status to 'training'
-      agents.value[index] = {
-        ...agents.value[index],
-        status: 'training'
-      };
-
-      // Initialize the progress for this agent
-      agentProgress.value[agentId] = 25;
-    }
+    // Update the agent's status to 'training' via API
+    router.put(route('agents.update', { agent: agentId }), {
+      status: 'training'
+    }, {
+      preserveScroll: true,
+      only: ['agents'],
+      onSuccess: () => {
+        // Initialize the progress for this agent
+        agentProgress.value[agentId] = 25;
+      }
+    });
   }
 };
 
@@ -509,34 +429,12 @@ const toggleAgentStatus = (agent: Agent) => {
     return;
   }
 
-  useForm().put(route('agents.toggle-status', { agent: agent.id }), {
+  router.put(route('agents.toggle-status', { agent: agent.id }), {}, {
     preserveScroll: true,
-    onSuccess: (response: any) => {
+    only: ['agents'],
+    onSuccess: (page) => {
+      // Determine the action based on the original agent status
       const action = agent.status === 'active' ? 'paused' : 'activated';
-
-      // Update the agent in the local state
-      if (response?.data?.agent) {
-        const updatedAgent = response.data.agent;
-        const index = agents.value.findIndex((a: Agent) => a.id === updatedAgent.id);
-        if (index !== -1) {
-          agents.value[index] = updatedAgent;
-        }
-      } else {
-        // Fallback to manual update if response doesn't contain the updated agent
-        const index = agents.value.findIndex((a: Agent) => a.id === agent.id);
-        if (index !== -1) {
-          const newStatus = agent.status === 'active' ? 'paused' : 'active';
-          const now = new Date().toISOString();
-
-          // Update the agent in the local state
-          agents.value[index] = {
-            ...agents.value[index],
-            status: newStatus,
-            // Update last_active_at only if the agent is being activated
-            last_active_at: newStatus === 'active' ? now : agents.value[index].last_active_at
-          };
-        }
-      }
 
       toast.success(`Agent ${action}`, {
         description: `${agent.name} has been ${action}.`
@@ -583,14 +481,10 @@ const deleteAgent = () => {
   const agentId = selectedAgent.value.id;
   const agentName = selectedAgent.value.name;
 
-  useForm().delete(route('agents.destroy', { agent: agentId }), {
+  router.delete(route('agents.destroy', { agent: agentId }), {
     preserveScroll: true,
+    only: ['agents'],
     onSuccess: () => {
-      // Remove the agent from the local state
-      const index = agents.value.findIndex((a: Agent) => a.id === agentId);
-      if (index !== -1) {
-        agents.value.splice(index, 1);
-      }
 
       showDeleteDialog.value = false;
       toast.success('Agent deleted', {

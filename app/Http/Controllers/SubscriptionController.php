@@ -33,8 +33,11 @@ class SubscriptionController extends Controller
             $paymentMethod = $user->defaultPaymentMethod();
         }
 
-        if ($user->subscribed('default')) {
-            $subscription = $user->subscription('default');
+        // Get the subscription type from the database or use 'default' as fallback
+        $subscriptionType = $this->getSubscriptionType($user);
+
+        if ($user->subscribed($subscriptionType)) {
+            $subscription = $user->subscription($subscriptionType);
             $invoices = $user->invoices();
         }
 
@@ -44,7 +47,7 @@ class SubscriptionController extends Controller
         // Get available plans
         $plans = $this->getAvailablePlans();
 
-        return Inertia::render('Subscription', [
+        return Inertia::render('Billing', [
             'subscription' => $formattedSubscription,
             'plans' => $plans,
         ]);
@@ -54,13 +57,13 @@ class SubscriptionController extends Controller
      * Subscribe the user to a plan.
      *
      * @param  \Illuminate\Http\Request  $request
-     * @return \Illuminate\Http\RedirectResponse
+     * @return \Illuminate\Http\RedirectResponse|\Illuminate\Http\JsonResponse
      */
     public function subscribe(Request $request)
     {
         $request->validate([
             'plan' => 'required|string',
-            'payment_method' => 'required|string',
+            'payment_method' => 'nullable|string', // Make payment_method nullable for plan changes
         ]);
 
         $user = Auth::user();
@@ -68,23 +71,168 @@ class SubscriptionController extends Controller
         $planId = $request->plan;
 
         try {
+            // Get the subscription type from the database or use 'default' as fallback
+            $subscriptionType = $this->getSubscriptionType($user);
+
+            // Log the subscription details for debugging
+            Log::info('Subscription change attempt', [
+                'user_id' => $user->id,
+                'subscription_type' => $subscriptionType,
+                'plan_id' => $planId,
+                'has_subscription' => $user->subscribed($subscriptionType),
+                'current_plan' => $user->subscribed($subscriptionType) ? $user->subscription($subscriptionType)->stripe_price : null
+            ]);
+
             // If the user already has a subscription, we'll swap the plan
-            if ($user->subscribed('default')) {
-                $user->subscription('default')->swap($planId);
+            if ($user->subscribed($subscriptionType)) {
+                try {
+                    // Get the current plan ID before swapping
+                    $oldPlanId = $user->subscription($subscriptionType)->stripe_price;
+
+                    // Check if the user is trying to change to the same plan
+                    if ($oldPlanId === $planId) {
+                        Log::info('User attempted to switch to the same plan', [
+                            'user_id' => $user->id,
+                            'subscription_type' => $subscriptionType,
+                            'plan_id' => $planId
+                        ]);
+
+                        return redirect()->route('billing')
+                            ->with('info', 'You are already subscribed to this plan.');
+                    }
+
+                    // Swap the plan
+                    $user->subscription($subscriptionType)->swap($planId);
+
+                    Log::info('Plan swapped successfully', [
+                        'user_id' => $user->id,
+                        'subscription_type' => $subscriptionType,
+                        'old_plan' => $oldPlanId,
+                        'new_plan' => $planId
+                    ]);
+                } catch (\Stripe\Exception\CardException $e) {
+                    Log::error('Stripe card error when swapping plan', [
+                        'user_id' => $user->id,
+                        'subscription_type' => $subscriptionType,
+                        'plan_id' => $planId,
+                        'error' => $e->getMessage(),
+                        'code' => $e->getCode()
+                    ]);
+                    throw $e;
+                } catch (\Stripe\Exception\InvalidRequestException $e) {
+                    Log::error('Stripe invalid request error when swapping plan', [
+                        'user_id' => $user->id,
+                        'subscription_type' => $subscriptionType,
+                        'plan_id' => $planId,
+                        'error' => $e->getMessage(),
+                        'code' => $e->getCode()
+                    ]);
+                    throw $e;
+                } catch (\Exception $e) {
+                    Log::error('Error swapping plan', [
+                        'user_id' => $user->id,
+                        'subscription_type' => $subscriptionType,
+                        'plan_id' => $planId,
+                        'error' => $e->getMessage(),
+                        'trace' => $e->getTraceAsString()
+                    ]);
+                    throw $e;
+                }
             } else {
                 // Create a new subscription
-                $user->newSubscription('default', $planId)
-                    ->create($paymentMethod);
+                try {
+                    // Check if the plan has a trial period
+                    $trialDays = $this->getPlanTrialDays($planId);
+
+                    // Create a subscription builder
+                    $subscriptionBuilder = $user->newSubscription($subscriptionType, $planId);
+
+                    // Apply trial period if available
+                    if ($trialDays > 0) {
+                        $subscriptionBuilder->trialDays($trialDays);
+                    }
+
+                    // Create the subscription
+                    $subscriptionBuilder->create($paymentMethod);
+
+                    Log::info('New subscription created', [
+                        'user_id' => $user->id,
+                        'subscription_type' => $subscriptionType,
+                        'plan_id' => $planId,
+                        'trial_days' => $trialDays
+                    ]);
+                } catch (\Exception $e) {
+                    Log::error('Error creating subscription', [
+                        'user_id' => $user->id,
+                        'subscription_type' => $subscriptionType,
+                        'plan_id' => $planId,
+                        'error' => $e->getMessage(),
+                        'trace' => $e->getTraceAsString()
+                    ]);
+                    throw $e;
+                }
             }
 
-            return redirect()->route('subscription.index')
+            // Check if the request expects JSON (AJAX request)
+            if ($request->expectsJson()) {
+                return response()->json([
+                    'success' => true,
+                    'message' => 'Subscription updated successfully!',
+                    'subscription' => $this->formatSubscription(
+                        $user->subscription($subscriptionType),
+                        $user->defaultPaymentMethod(),
+                        $user->invoices()
+                    )
+                ]);
+            }
+
+            return redirect()->route('billing')
                 ->with('success', 'Subscription created successfully!');
         } catch (IncompletePayment $exception) {
+            Log::warning('Incomplete payment during subscription', [
+                'user_id' => $user->id,
+                'payment_id' => $exception->payment->id,
+                'error' => $exception->getMessage()
+            ]);
+
+            if ($request->expectsJson()) {
+                return response()->json([
+                    'error' => 'Incomplete payment',
+                    'payment_id' => $exception->payment->id,
+                    'redirect' => route('cashier.payment', [$exception->payment->id, 'redirect' => route('billing')])
+                ], 402);
+            }
+
             return redirect()->route('cashier.payment', [
-                $exception->payment->id, 'redirect' => route('subscription.index')
+                $exception->payment->id, 'redirect' => route('billing')
             ]);
         } catch (CardException $exception) {
+            Log::error('Card exception during subscription', [
+                'user_id' => $user->id,
+                'error' => $exception->getMessage()
+            ]);
+
+            if ($request->expectsJson()) {
+                return response()->json([
+                    'error' => $exception->getMessage()
+                ], 400);
+            }
+
             return back()->withErrors(['error' => $exception->getMessage()]);
+        } catch (\Exception $exception) {
+            Log::error('Unexpected error during subscription', [
+                'user_id' => $user->id,
+                'error' => $exception->getMessage(),
+                'trace' => $exception->getTraceAsString()
+            ]);
+
+            if ($request->expectsJson()) {
+                return response()->json([
+                    'error' => 'There was an error processing your request: ' . $exception->getMessage()
+                ], 500);
+            }
+
+            return back()->withErrors(['error' => 'There was an error processing your request: ' . $exception->getMessage()]);
         }
     }
 
@@ -107,7 +255,7 @@ class SubscriptionController extends Controller
             $user->updateDefaultPaymentMethod($paymentMethod);
             $user->updateDefaultPaymentMethodFromStripe();
 
-            return redirect()->route('subscription.index')
+            return redirect()->route('billing')
                 ->with('success', 'Payment method updated successfully!');
         } catch (CardException $exception) {
             return back()->withErrors(['error' => $exception->getMessage()]);
@@ -129,7 +277,10 @@ class SubscriptionController extends Controller
 
         $user = Auth::user();
 
-        if ($user->subscribed('default')) {
+        // Get the subscription type from the database or use 'default' as fallback
+        $subscriptionType = $this->getSubscriptionType($user);
+
+        if ($user->subscribed($subscriptionType)) {
             // Store cancellation reason if provided
             if ($request->has('reason') && !empty($request->reason)) {
                 // You could store this in a database table if needed
@@ -140,11 +291,11 @@ class SubscriptionController extends Controller
             // Determine cancellation type
             if ($request->cancel_type === 'immediately') {
                 // Cancel the subscription immediately
-                $user->subscription('default')->cancelNow();
+                $user->subscription($subscriptionType)->cancelNow();
                 $message = 'Your subscription has been cancelled immediately.';
             } else {
                 // Cancel the subscription at the end of the billing period
-                $user->subscription('default')->cancel();
+                $user->subscription($subscriptionType)->cancel();
                 $message = 'Your subscription has been cancelled and will end at the end of your billing period.';
             }
 
@@ -163,15 +314,49 @@ class SubscriptionController extends Controller
     public function resume()
     {
         $user = Auth::user();
+        $subscriptionType = $this->getSubscriptionType($user);
+        $subscription = $user->subscription($subscriptionType);
 
-        if ($user->subscription('default')->cancelled()) {
-            $user->subscription('default')->resume();
-
-            return redirect()->route('subscription.index')
-                ->with('success', 'Your subscription has been resumed.');
+        if (!$subscription) {
+            return back()->withErrors(['error' => 'No subscription found.']);
         }
 
-        return back()->withErrors(['error' => 'Your subscription cannot be resumed.']);
+        // Check if the subscription is on grace period (can be resumed)
+        if ($subscription->onGracePeriod()) {
+            try {
+                $subscription->resume();
+
+                if (request()->expectsJson()) {
+                    return response()->json([
+                        'message' => 'Your subscription has been resumed successfully.'
+                    ]);
+                }
+
+                return redirect()->route('billing')
+                    ->with('success', 'Your subscription has been resumed successfully.');
+            } catch (\Exception $e) {
+                Log::error('Error resuming subscription: ' . $e->getMessage(), [
+                    'user_id' => $user->id,
+                    'subscription_id' => $subscription->id
+                ]);
+
+                if (request()->expectsJson()) {
+                    return response()->json([
+                        'error' => 'Failed to resume subscription: ' . $e->getMessage()
+                    ], 500);
+                }
+
+                return back()->withErrors(['error' => 'Failed to resume subscription: ' . $e->getMessage()]);
+            }
+        }
+
+        if (request()->expectsJson()) {
+            return response()->json([
+                'error' => 'Your subscription cannot be resumed. It must be on a grace period to be resumed.'
+            ], 400);
+        }
+
+        return back()->withErrors(['error' => 'Your subscription cannot be resumed. It must be on a grace period to be resumed.']);
     }
 
     /**
@@ -213,46 +398,34 @@ class SubscriptionController extends Controller
                 // Get features from product metadata or use defaults
                 $features = [];
 
-                // Default features based on plan name
-                if (strtolower($name) === 'starter') {
-                    $features = [
-                        ['name' => '1 AI Agent', 'included' => true],
-                        ['name' => '5,000 interactions per month', 'included' => true],
-                        ['name' => 'Basic analytics', 'included' => true],
-                        ['name' => 'Email support', 'included' => true],
-                        ['name' => 'File uploads (up to 50MB)', 'included' => true],
-                        ['name' => 'Website training', 'included' => true],
-                        ['name' => 'API access', 'included' => false],
-                        ['name' => 'Custom branding', 'included' => false],
-                        ['name' => 'Advanced analytics', 'included' => false],
-                        ['name' => 'Priority support', 'included' => false],
-                    ];
-                } elseif (strtolower($name) === 'professional') {
-                    $features = [
-                        ['name' => '5 AI Agents', 'included' => true],
-                        ['name' => '25,000 interactions per month', 'included' => true],
-                        ['name' => 'Advanced analytics', 'included' => true],
-                        ['name' => 'Priority email support', 'included' => true],
-                        ['name' => 'File uploads (up to 200MB)', 'included' => true],
-                        ['name' => 'Website training', 'included' => true],
-                        ['name' => 'API access', 'included' => true],
-                        ['name' => 'Custom branding', 'included' => true],
-                        ['name' => 'Team collaboration', 'included' => false],
-                        ['name' => '24/7 phone support', 'included' => false],
-                    ];
-                } elseif (strtolower($name) === 'enterprise') {
-                    $features = [
-                        ['name' => 'Unlimited AI Agents', 'included' => true],
-                        ['name' => 'Unlimited interactions', 'included' => true],
-                        ['name' => 'Advanced analytics & reporting', 'included' => true],
-                        ['name' => '24/7 priority support', 'included' => true],
-                        ['name' => 'Unlimited file uploads', 'included' => true],
-                        ['name' => 'Website & API training', 'included' => true],
-                        ['name' => 'Advanced API access', 'included' => true],
-                        ['name' => 'Custom branding & white labeling', 'included' => true],
-                        ['name' => 'Team collaboration', 'included' => true],
-                        ['name' => 'Dedicated account manager', 'included' => true],
-                    ];
+                // Try to get features from product metadata
+                $features = [];
+
+                // Check if product has metadata with features
+                if (isset($price->product->metadata->features)) {
+                    try {
+                        // Try to parse features from metadata
+                        $featuresData = json_decode($price->product->metadata->features, true);
+                        if (is_array($featuresData)) {
+                            $features = $featuresData;
+                        }
+                    } catch (\Exception $e) {
+                        Log::warning('Failed to parse features from product metadata', [
+                            'product_id' => $price->product->id,
+                            'error' => $e->getMessage()
+                        ]);
+                    }
+                }
+
+                // If no features found, use default features
+                if (empty($features)) {
+                    $features = $this->getDefaultFeatures();
+                }
+
+                // Get trial days from product metadata
+                $trialDays = null;
+                if (isset($price->product->metadata->trial_days)) {
+                    $trialDays = (int) $price->product->metadata->trial_days;
                 }
 
                 // Add the plan to the list
@@ -262,7 +435,8 @@ class SubscriptionController extends Controller
                     'price' => $amount,
                     'interval' => $interval,
                     'currency' => $currency,
-                    'features' => $features
+                    'features' => $features,
+                    'trial_days' => $trialDays
                 ];
             }
 
@@ -282,71 +456,18 @@ class SubscriptionController extends Controller
     }
 
     /**
-     * Get fallback plans when Stripe API fails.
+     * Get empty array when Stripe API fails.
+     * We no longer use hardcoded fallback plans.
      *
      * @return array
      */
     private function getFallbackPlans()
     {
-        return [
-            [
-                'id' => 'price_fallback_starter',
-                'name' => 'Starter',
-                'price' => 29,
-                'interval' => 'month',
-                'currency' => 'usd',
-                'features' => [
-                    ['name' => '1 AI Agent', 'included' => true],
-                    ['name' => '5,000 interactions per month', 'included' => true],
-                    ['name' => 'Basic analytics', 'included' => true],
-                    ['name' => 'Email support', 'included' => true],
-                    ['name' => 'File uploads (up to 50MB)', 'included' => true],
-                    ['name' => 'Website training', 'included' => true],
-                    ['name' => 'API access', 'included' => false],
-                    ['name' => 'Custom branding', 'included' => false],
-                    ['name' => 'Advanced analytics', 'included' => false],
-                    ['name' => 'Priority support', 'included' => false],
-                ]
-            ],
-            [
-                'id' => 'price_fallback_professional',
-                'name' => 'Professional',
-                'price' => 79,
-                'interval' => 'month',
-                'currency' => 'usd',
-                'features' => [
-                    ['name' => '5 AI Agents', 'included' => true],
-                    ['name' => '25,000 interactions per month', 'included' => true],
-                    ['name' => 'Advanced analytics', 'included' => true],
-                    ['name' => 'Priority email support', 'included' => true],
-                    ['name' => 'File uploads (up to 200MB)', 'included' => true],
-                    ['name' => 'Website training', 'included' => true],
-                    ['name' => 'API access', 'included' => true],
-                    ['name' => 'Custom branding', 'included' => true],
-                    ['name' => 'Team collaboration', 'included' => false],
-                    ['name' => '24/7 phone support', 'included' => false],
-                ]
-            ],
-            [
-                'id' => 'price_fallback_enterprise',
-                'name' => 'Enterprise',
-                'price' => 199,
-                'interval' => 'month',
-                'currency' => 'usd',
-                'features' => [
-                    ['name' => 'Unlimited AI Agents', 'included' => true],
-                    ['name' => 'Unlimited interactions', 'included' => true],
-                    ['name' => 'Advanced analytics & reporting', 'included' => true],
-                    ['name' => '24/7 priority support', 'included' => true],
-                    ['name' => 'Unlimited file uploads', 'included' => true],
-                    ['name' => 'Website & API training', 'included' => true],
-                    ['name' => 'Advanced API access', 'included' => true],
-                    ['name' => 'Custom branding & white labeling', 'included' => true],
-                    ['name' => 'Team collaboration', 'included' => true],
-                    ['name' => 'Dedicated account manager', 'included' => true],
-                ]
-            ]
-        ];
+        // Log the error for monitoring
+        Log::warning('Using empty plans array as fallback because Stripe API failed');
+
+        // Return empty array instead of hardcoded plans
+        return [];
     }
 
     /**
@@ -359,9 +480,12 @@ class SubscriptionController extends Controller
         $user = Auth::user();
 
         try {
+            // Get the subscription type from the database or use 'default' as fallback
+            $subscriptionType = $this->getSubscriptionType($user);
+
             // Check if the user has a subscription
-            if ($user->subscribed('default')) {
-                $subscription = $user->subscription('default');
+            if ($user->subscribed($subscriptionType)) {
+                $subscription = $user->subscription($subscriptionType);
 
                 // Get the subscription from Stripe
                 \Stripe\Stripe::setApiKey(config('cashier.secret'));
@@ -431,10 +555,47 @@ class SubscriptionController extends Controller
         // Format invoices
         $formattedInvoices = [];
         foreach ($invoices as $invoice) {
+            // Format the date with month name
+            $date = $invoice->date()->format('F j, Y');
+
+            // Format the amount with currency symbol
+            try {
+                // Log the raw invoice total for debugging
+                $rawTotal = $invoice->total();
+                Log::info('Raw invoice total', [
+                    'invoice_id' => $invoice->id,
+                    'raw_total' => $rawTotal,
+                    'type' => gettype($rawTotal)
+                ]);
+
+                // If the amount already includes a currency symbol (e.g., '$20')
+                if (is_string($rawTotal) && strpos($rawTotal, '$') === 0) {
+                    // Remove the currency symbol and any commas
+                    $cleanAmount = str_replace(['$', ','], '', $rawTotal);
+                    // Convert to float and then to integer cents
+                    $amount = (int)round(floatval($cleanAmount) * 100);
+                    // Use the original string as the formatted amount
+                    $formattedAmount = $rawTotal;
+                } else {
+                    // Handle as before - convert to integer and format
+                    $amount = (int)$rawTotal;
+                    $formattedAmount = '$' . number_format($amount / 100, 2);
+                }
+            } catch (\Exception $e) {
+                // If there's an error formatting the amount, use a fallback
+                Log::error('Error formatting invoice amount', [
+                    'invoice_id' => $invoice->id,
+                    'error' => $e->getMessage()
+                ]);
+                $amount = 0;
+                $formattedAmount = '$0.00';
+            }
+
             $formattedInvoices[] = [
                 'id' => $invoice->id,
-                'date' => $invoice->date()->toIso8601String(),
-                'amount' => $invoice->total(),
+                'date' => $date,
+                'total' => $amount,
+                'formatted_amount' => $formattedAmount,
                 'status' => $invoice->status,
                 'invoice_pdf' => $invoice->invoice_pdf,
             ];
@@ -442,6 +603,12 @@ class SubscriptionController extends Controller
 
         // Get features based on the plan
         $features = $this->getPlanFeatures($stripePlan->id);
+
+        // Get trial days from product metadata
+        $trialDays = $this->getPlanTrialDays($stripePlan->id);
+
+        // Check if the subscription is on grace period
+        $onGracePeriod = $subscription->onGracePeriod();
 
         return [
             'name' => $product->name,
@@ -458,6 +625,8 @@ class SubscriptionController extends Controller
             'next_billing_date' => $this->getNextBillingDate($subscription) ?? $this->getFallbackBillingDate($subscription),
             'invoices' => $formattedInvoices,
             'features' => $features,
+            'on_grace_period' => $onGracePeriod,
+            'trial_days' => $trialDays,
         ];
     }
 
@@ -477,6 +646,12 @@ class SubscriptionController extends Controller
             foreach ($prices->data as $price) {
                 // Only include prices with recurring payments
                 if ($price->type === 'recurring') {
+                    // Get trial days from product metadata
+                    $trialDays = null;
+                    if (isset($price->product->metadata->trial_days)) {
+                        $trialDays = (int) $price->product->metadata->trial_days;
+                    }
+
                     $plans[] = [
                         'id' => $price->id,
                         'name' => $price->product->name,
@@ -484,6 +659,7 @@ class SubscriptionController extends Controller
                         'interval' => $price->recurring->interval,
                         'currency' => $price->currency,
                         'features' => $this->getPlanFeatures($price->id),
+                        'trial_days' => $trialDays,
                     ];
                 }
             }
@@ -496,33 +672,9 @@ class SubscriptionController extends Controller
             Log::error('Error fetching Stripe plans: ' . $e->getMessage());
         }
 
-        // Fallback to hardcoded plans if Stripe fetch fails
-        return [
-            [
-                'id' => 'price_1RFkCl06DSRI9z5wXnLQZJnO',
-                'name' => 'Starter',
-                'price' => 29.99,
-                'interval' => 'month',
-                'currency' => 'usd',
-                'features' => $this->getPlanFeatures('price_1RFkCl06DSRI9z5wXnLQZJnO'),
-            ],
-            [
-                'id' => 'price_1RFkDK06DSRI9z5wJnLQZJnO',
-                'name' => 'Professional',
-                'price' => 79.99,
-                'interval' => 'month',
-                'currency' => 'usd',
-                'features' => $this->getPlanFeatures('price_1RFkDK06DSRI9z5wJnLQZJnO'),
-            ],
-            [
-                'id' => 'price_1RFkDr06DSRI9z5wJnLQZJnO',
-                'name' => 'Enterprise',
-                'price' => 199.99,
-                'interval' => 'month',
-                'currency' => 'usd',
-                'features' => $this->getPlanFeatures('price_1RFkDr06DSRI9z5wJnLQZJnO'),
-            ],
-        ];
+        // Return empty array instead of hardcoded plans
+        Log::warning('No plans found from Stripe API, returning empty array');
+        return [];
     }
 
     /**
@@ -534,110 +686,46 @@ class SubscriptionController extends Controller
     private function getPlanFeatures($planId)
     {
         try {
-            // First, get the plan details to determine its name
+            // Try to get plan details from Stripe
             \Stripe\Stripe::setApiKey(config('cashier.secret'));
+
+            // Retrieve the price and product to check for metadata
             $price = \Stripe\Price::retrieve([
                 'id' => $planId,
                 'expand' => ['product']
             ]);
 
-            // Get the product name
-            $productName = $price->product->name;
-
-            // Map features based on product name (case-insensitive)
-            $productNameLower = strtolower($productName);
-
-            if (strpos($productNameLower, 'starter') !== false) {
-                return $this->getStarterFeatures();
-            } elseif (strpos($productNameLower, 'professional') !== false) {
-                return $this->getProfessionalFeatures();
-            } elseif (strpos($productNameLower, 'enterprise') !== false) {
-                return $this->getEnterpriseFeatures();
+            // Check if product has metadata with features
+            if (isset($price->product->metadata->features)) {
+                try {
+                    // Try to parse features from metadata
+                    $featuresData = json_decode($price->product->metadata->features, true);
+                    if (is_array($featuresData)) {
+                        return $featuresData;
+                    }
+                } catch (\Exception $e) {
+                    Log::warning('Failed to parse features from product metadata', [
+                        'product_id' => $price->product->id,
+                        'error' => $e->getMessage()
+                    ]);
+                }
             }
 
-            // If no specific match, return default features
+            // If no features found in metadata, return default features
             return $this->getDefaultFeatures();
 
         } catch (\Exception $e) {
             Log::error('Error fetching plan features: ' . $e->getMessage());
 
-            // Fallback to hardcoded features based on price ID patterns
-            // This is a backup in case the Stripe API call fails
-            if (strpos($planId, '1RFkCl') !== false) {
-                return $this->getStarterFeatures();
-            } elseif (strpos($planId, '1RFkDK') !== false) {
-                return $this->getProfessionalFeatures();
-            } elseif (strpos($planId, '1RFkDr') !== false) {
-                return $this->getEnterpriseFeatures();
-            }
+            // Return default features instead of hardcoded ones
+            Log::warning('Could not fetch plan features from Stripe, using default features');
 
             // Default fallback
             return $this->getDefaultFeatures();
         }
     }
 
-    /**
-     * Get features for the Starter plan.
-     *
-     * @return array
-     */
-    private function getStarterFeatures()
-    {
-        return [
-            ['name' => '1 AI Agent', 'included' => true],
-            ['name' => '5,000 interactions per month', 'included' => true],
-            ['name' => 'Basic analytics', 'included' => true],
-            ['name' => 'Email support', 'included' => true],
-            ['name' => 'File uploads (up to 50MB)', 'included' => true],
-            ['name' => 'Website training', 'included' => true],
-            ['name' => 'API access', 'included' => false],
-            ['name' => 'Custom branding', 'included' => false],
-            ['name' => 'Advanced analytics', 'included' => false],
-            ['name' => 'Priority support', 'included' => false],
-        ];
-    }
 
-    /**
-     * Get features for the Professional plan.
-     *
-     * @return array
-     */
-    private function getProfessionalFeatures()
-    {
-        return [
-            ['name' => '5 AI Agents', 'included' => true],
-            ['name' => '25,000 interactions per month', 'included' => true],
-            ['name' => 'Advanced analytics', 'included' => true],
-            ['name' => 'Priority email support', 'included' => true],
-            ['name' => 'File uploads (up to 200MB)', 'included' => true],
-            ['name' => 'Website training', 'included' => true],
-            ['name' => 'API access', 'included' => true],
-            ['name' => 'Custom branding', 'included' => true],
-            ['name' => 'Team collaboration', 'included' => false],
-            ['name' => '24/7 phone support', 'included' => false],
-        ];
-    }
-
-    /**
-     * Get features for the Enterprise plan.
-     *
-     * @return array
-     */
-    private function getEnterpriseFeatures()
-    {
-        return [
-            ['name' => 'Unlimited AI Agents', 'included' => true],
-            ['name' => 'Unlimited interactions', 'included' => true],
-            ['name' => 'Advanced analytics & reporting', 'included' => true],
-            ['name' => '24/7 priority support', 'included' => true],
-            ['name' => 'Unlimited file uploads', 'included' => true],
-            ['name' => 'Website & API training', 'included' => true],
-            ['name' => 'Advanced API access', 'included' => true],
-            ['name' => 'Custom branding & white labeling', 'included' => true],
-            ['name' => 'Team collaboration', 'included' => true],
-            ['name' => 'Dedicated account manager', 'included' => true],
-        ];
-    }
 
     /**
      * Get default features for unknown plans.
@@ -650,6 +738,40 @@ class SubscriptionController extends Controller
             ['name' => 'Basic features', 'included' => true],
             ['name' => 'Standard support', 'included' => true],
         ];
+    }
+
+    /**
+     * Get trial days for a specific plan.
+     *
+     * @param  string  $planId
+     * @return int
+     */
+    private function getPlanTrialDays($planId)
+    {
+        try {
+            // Try to get plan details from Stripe
+            \Stripe\Stripe::setApiKey(config('cashier.secret'));
+
+            // Retrieve the price and product to check for metadata
+            $price = \Stripe\Price::retrieve([
+                'id' => $planId,
+                'expand' => ['product']
+            ]);
+
+            // Check if product has metadata with trial days
+            if (isset($price->product->metadata->trial_days)) {
+                return (int) $price->product->metadata->trial_days;
+            }
+
+            // No trial days found
+            return 0;
+
+        } catch (\Exception $e) {
+            Log::error('Error fetching plan trial days: ' . $e->getMessage());
+
+            // Return 0 trial days on error
+            return 0;
+        }
     }
 
     /**
@@ -720,5 +842,21 @@ class SubscriptionController extends Controller
 
         Log::info('Fallback billing date calculated', ['date' => $nextBillingDate]);
         return $nextBillingDate;
+    }
+
+    /**
+     * Get the subscription type for a user.
+     * This method retrieves the subscription type from the database or returns 'default' as fallback.
+     *
+     * @param  \App\Models\User  $user
+     * @return string
+     */
+    public function getSubscriptionType($user)
+    {
+        // Check if the user has any subscription
+        $subscription = $user->subscriptions()->first();
+
+        // If a subscription exists, return its type, otherwise return 'default'
+        return $subscription ? $subscription->type : 'default';
     }
 }

@@ -8,7 +8,7 @@ import { Link } from '@inertiajs/vue3';
 import {
     BookOpen, Folder, LayoutGrid, Bot, CreditCard,
     Users, ShieldCheck, Settings, BellRing,
-    ImageIcon, BarChart3
+    ImageIcon, BarChart3, Package
 } from 'lucide-vue-next';
 import AppLogo from './AppLogo.vue';
 
@@ -27,6 +27,11 @@ const mainNavItems: NavItem[] = [
         title: 'Subscriptions',
         href: '/admin/subscriptions',
         icon: CreditCard,
+    },
+    {
+        title: 'Plans',
+        href: '/admin/plans',
+        icon: Package,
     },
     {
         title: 'Roles & Permissions',

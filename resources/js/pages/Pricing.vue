@@ -146,72 +146,24 @@ const billingPeriod = ref('monthly');
 // Loading state for plans
 const isLoadingPlans = ref(true);
 
-// Fallback pricing plans data (used if API fetch fails)
-const fallbackPlans = [
-  {
-    name: 'Starter',
+// Plan descriptions and UI properties
+const planUIProperties = {
+  starter: {
     description: 'Perfect for individuals and small projects',
-    monthlyPrice: 29,
-    yearlyPrice: 29 * 10, // 10 months for the price of 12 (16.67% discount)
-    features: [
-      { name: '1 AI Agent', included: true },
-      { name: '5,000 interactions per month', included: true },
-      { name: 'Basic analytics', included: true },
-      { name: 'Email support', included: true },
-      { name: 'File uploads (up to 50MB)', included: true },
-      { name: 'Website training', included: true },
-      { name: 'API access', included: false },
-      { name: 'Custom branding', included: false },
-      { name: 'Advanced analytics', included: false },
-      { name: 'Priority support', included: false },
-    ],
-    cta: 'Get Started',
     popular: false,
     color: 'bg-blue-500'
   },
-  {
-    name: 'Professional',
+  professional: {
     description: 'For growing businesses and teams',
-    monthlyPrice: 79,
-    yearlyPrice: 79 * 10, // 10 months for the price of 12 (16.67% discount)
-    features: [
-      { name: '5 AI Agents', included: true },
-      { name: '25,000 interactions per month', included: true },
-      { name: 'Advanced analytics', included: true },
-      { name: 'Priority email support', included: true },
-      { name: 'File uploads (up to 200MB)', included: true },
-      { name: 'Website training', included: true },
-      { name: 'API access', included: true },
-      { name: 'Custom branding', included: true },
-      { name: 'Team collaboration', included: false },
-      { name: '24/7 phone support', included: false },
-    ],
-    cta: 'Get Started',
     popular: true,
     color: 'bg-purple-500'
   },
-  {
-    name: 'Enterprise',
+  enterprise: {
     description: 'For large organizations with advanced needs',
-    monthlyPrice: 199,
-    yearlyPrice: 199 * 10, // 10 months for the price of 12 (16.67% discount)
-    features: [
-      { name: 'Unlimited AI Agents', included: true },
-      { name: 'Unlimited interactions', included: true },
-      { name: 'Advanced analytics & reporting', included: true },
-      { name: '24/7 priority support', included: true },
-      { name: 'Unlimited file uploads', included: true },
-      { name: 'Website & API training', included: true },
-      { name: 'Advanced API access', included: true },
-      { name: 'Custom branding & white labeling', included: true },
-      { name: 'Team collaboration', included: true },
-      { name: 'Dedicated account manager', included: true },
-    ],
-    cta: 'Contact Sales',
     popular: false,
     color: 'bg-green-500'
   }
-];
+};
 
 // Reactive plans data that will be populated from API
 const stripePlans = ref([]);
@@ -245,10 +197,15 @@ const plans = computed<UIPlan[]>(() => {
   if (stripePlans.value && stripePlans.value.length > 0) {
     // Map Stripe plans to the format expected by the UI
     return stripePlans.value.map((plan: StripePlan) => {
-      // Find matching fallback plan to get description and other UI properties
-      const fallbackPlan = fallbackPlans.find(fp =>
-        fp.name.toLowerCase() === plan.name.toLowerCase()
-      ) || fallbackPlans[0];
+      // Get the plan name in lowercase for matching with UI properties
+      const planNameLower = plan.name.toLowerCase();
+
+      // Find matching UI properties or use default properties
+      const uiProps = planUIProperties[planNameLower as keyof typeof planUIProperties] || {
+        description: 'A flexible plan for your needs',
+        popular: false,
+        color: 'bg-gray-500'
+      };
 
       // Calculate yearly price (monthly price * 10 for 2 months free)
       const monthlyPrice = parseFloat(plan.price as string);
@@ -257,21 +214,21 @@ const plans = computed<UIPlan[]>(() => {
       return {
         id: plan.id,
         name: plan.name,
-        description: fallbackPlan.description,
+        description: uiProps.description,
         monthlyPrice: monthlyPrice,
         yearlyPrice: yearlyPrice,
         interval: plan.interval,
         currency: plan.currency,
-        features: plan.features || fallbackPlan.features,
-        cta: plan.name.toLowerCase() === 'enterprise' ? 'Contact Sales' : 'Get Started',
-        popular: fallbackPlan.popular,
-        color: fallbackPlan.color
+        features: plan.features || [],
+        cta: planNameLower === 'enterprise' ? 'Contact Sales' : 'Get Started',
+        popular: uiProps.popular,
+        color: uiProps.color
       };
     });
   }
 
-  // Return fallback plans if no Stripe plans are available
-  return fallbackPlans;
+  // Return empty array if no Stripe plans are available
+  return [];
 });
 
 // Computed property to calculate the average savings percentage across all plans
@@ -532,7 +489,7 @@ const calculateSavings = (monthlyPrice: number, yearlyPrice: number): number => 
             </div>
           </div>
 
-          <div v-else class="grid md:grid-cols-3 gap-8 max-w-6xl mx-auto">
+          <div v-else-if="plans.length > 0" class="grid md:grid-cols-3 gap-8 max-w-6xl mx-auto">
             <div v-for="(plan, index) in plans" :key="index" class="relative">
               <!-- Popular Badge -->
               <div v-if="plan.popular" class="absolute -top-4 left-0 right-0 flex justify-center">
@@ -588,6 +545,33 @@ const calculateSavings = (monthlyPrice: number, yearlyPrice: number): number => 
                   </Button>
                 </CardFooter>
               </Card>
+            </div>
+          </div>
+
+          <!-- No Plans Available Message -->
+          <div v-else class="max-w-2xl mx-auto text-center">
+            <div class="bg-amber-50 dark:bg-amber-900/30 rounded-xl p-8 mb-8">
+              <div class="mx-auto w-16 h-16 rounded-full bg-amber-100 dark:bg-amber-800/50 flex items-center justify-center mb-4">
+                <AlertCircle class="h-8 w-8 text-amber-600 dark:text-amber-400" />
+              </div>
+              <h3 class="text-xl font-medium mb-2">No Subscription Plans Available</h3>
+              <p class="text-muted-foreground mb-6">
+                We couldn't find any subscription plans at the moment. Please check back later or contact our support team for assistance.
+              </p>
+              <Button @click="fetchPlans" class="mx-auto">
+                <RefreshCw class="h-4 w-4 mr-2" />
+                Refresh Plans
+              </Button>
+            </div>
+
+            <div class="mt-8">
+              <h3 class="text-xl font-medium mb-4">Interested in our services?</h3>
+              <p class="text-muted-foreground mb-6">
+                Contact our sales team to discuss custom pricing options tailored to your needs.
+              </p>
+              <Button variant="outline" size="lg" as="a" href="mailto:sales@example.com">
+                Contact Sales
+              </Button>
             </div>
           </div>
         </div>

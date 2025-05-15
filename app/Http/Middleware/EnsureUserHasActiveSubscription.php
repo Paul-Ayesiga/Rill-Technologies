@@ -4,6 +4,8 @@ namespace App\Http\Middleware;
 
 use Closure;
 use Illuminate\Http\Request;
+use Illuminate\Support\Facades\Cache;
+use Illuminate\Support\Facades\Log;
 use Symfony\Component\HttpFoundation\Response;
 
 class EnsureUserHasActiveSubscription
@@ -44,6 +46,7 @@ class EnsureUserHasActiveSubscription
     {
         // Check if user is on trial
         if ($user->onTrial()) {
+            Log::info('User is on trial', ['user_id' => $user->id]);
             return true;
         }
 
@@ -52,34 +55,138 @@ class EnsureUserHasActiveSubscription
 
         // No subscription
         if (!$subscription) {
+            Log::info('User has no subscription', ['user_id' => $user->id]);
             return false;
         }
 
         // Check if the subscription is on grace period (canceled but still valid until the end date)
-        // This is the key check for canceled subscriptions that are still running
         if ($subscription->onGracePeriod()) {
+            Log::info('User subscription is on grace period', [
+                'user_id' => $user->id,
+                'subscription_id' => $subscription->id,
+                'ends_at' => $subscription->ends_at
+            ]);
             return true;
         }
 
-        // Check the Stripe status directly
-        if (isset($subscription->stripe_status)) {
-            // Valid statuses that allow access
-            $validStatuses = ['active', 'trialing'];
+        // Check the database status
+        $dbStatus = $subscription->stripe_status ?? null;
+        $validStatuses = ['active', 'trialing'];
 
-            // If the status is one of the valid ones, allow access
-            if (in_array($subscription->stripe_status, $validStatuses)) {
-                return true;
-            }
+        // If the database status is not valid, check Stripe directly
+        if (!in_array($dbStatus, $validStatuses)) {
+            Log::info('Database subscription status is not valid', [
+                'user_id' => $user->id,
+                'subscription_id' => $subscription->id,
+                'db_status' => $dbStatus
+            ]);
+            return false;
         }
 
-        // Fallback to the Laravel Cashier methods if stripe_status is not available
+        // Now verify with Stripe to ensure the statuses match
+        $stripeStatus = $this->getStripeSubscriptionStatus($subscription);
 
-        // Check if the subscription is active (not expired) and not canceled
-        if ($subscription->active() && !$subscription->canceled()) {
-            return true;
+        // If we couldn't get the Stripe status, fall back to the database status
+        if ($stripeStatus === null) {
+            Log::warning('Could not verify subscription status with Stripe, using database status', [
+                'user_id' => $user->id,
+                'subscription_id' => $subscription->id,
+                'db_status' => $dbStatus
+            ]);
+            return in_array($dbStatus, $validStatuses);
         }
 
-        // If we get here, the subscription is not valid
-        return false;
+        // Check if both statuses are valid and match
+        $statusesMatch = $dbStatus === $stripeStatus;
+        $stripeStatusValid = in_array($stripeStatus, $validStatuses);
+
+        if (!$statusesMatch) {
+            Log::warning('Subscription status mismatch between database and Stripe', [
+                'user_id' => $user->id,
+                'subscription_id' => $subscription->id,
+                'db_status' => $dbStatus,
+                'stripe_status' => $stripeStatus
+            ]);
+
+            // If the statuses don't match, update the database
+            $this->updateSubscriptionStatus($subscription, $stripeStatus);
+        }
+
+        // Both database and Stripe must have valid statuses
+        $isValid = $stripeStatusValid && in_array($dbStatus, $validStatuses);
+
+        Log::info('Subscription status check result', [
+            'user_id' => $user->id,
+            'subscription_id' => $subscription->id,
+            'db_status' => $dbStatus,
+            'stripe_status' => $stripeStatus,
+            'statuses_match' => $statusesMatch,
+            'is_valid' => $isValid
+        ]);
+
+        return $isValid;
+    }
+
+    /**
+     * Get the subscription status directly from Stripe.
+     *
+     * @param  \Laravel\Cashier\Subscription  $subscription
+     * @return string|null
+     */
+    protected function getStripeSubscriptionStatus($subscription): ?string
+    {
+        // Use cache to avoid excessive API calls
+        $cacheKey = 'stripe_subscription_status_' . $subscription->stripe_id;
+
+        // Check if we have a cached status (cache for 5 minutes)
+        if (Cache::has($cacheKey)) {
+            return Cache::get($cacheKey);
+        }
+
+        try {
+            // Set Stripe API key
+            \Stripe\Stripe::setApiKey(config('cashier.secret'));
+
+            // Get the subscription from Stripe
+            $stripeSubscription = \Stripe\Subscription::retrieve($subscription->stripe_id);
+
+            // Cache the status for 5 minutes
+            Cache::put($cacheKey, $stripeSubscription->status, now()->addMinutes(5));
+
+            return $stripeSubscription->status;
+        } catch (\Exception $e) {
+            Log::error('Error fetching subscription status from Stripe', [
+                'subscription_id' => $subscription->id,
+                'stripe_id' => $subscription->stripe_id,
+                'error' => $e->getMessage()
+            ]);
+
+            return null;
+        }
+    }
+
+    /**
+     * Update the subscription status in the database.
+     *
+     * @param  \Laravel\Cashier\Subscription  $subscription
+     * @param  string  $stripeStatus
+     * @return void
+     */
+    protected function updateSubscriptionStatus($subscription, $stripeStatus): void
+    {
+        try {
+            $subscription->stripe_status = $stripeStatus;
+            $subscription->save();
+
+            Log::info('Updated subscription status in database', [
+                'subscription_id' => $subscription->id,
+                'new_status' => $stripeStatus
+            ]);
+        } catch (\Exception $e) {
+            Log::error('Error updating subscription status in database', [
+                'subscription_id' => $subscription->id,
+                'error' => $e->getMessage()
+            ]);
+        }
     }
 }
