@@ -1,25 +1,35 @@
 <?php
 
-namespace App\Http\Controllers;
+namespace App\Http\Controllers\Admin;
 
-use App\Jobs\GenerateInvoicePdf;
-use App\Jobs\ProcessInvoiceBatch;
+use App\Http\Controllers\Controller;
+use App\Jobs\Admin\GenerateAdminInvoicePdf;
+use App\Jobs\Admin\ProcessAdminInvoiceBatch;
+use App\Models\User;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Auth;
 use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\Storage;
 
-class InvoiceController extends Controller
+class AdminInvoiceController extends Controller
 {
     /**
-     * Request an invoice to be generated in the background.
+     * Request an invoice to be generated in the background for a specific user.
      */
-    public function generate(Request $request, string $invoiceId)
+    public function generate(Request $request, string $userId, string $invoiceId)
     {
-        $user = Auth::user();
+        $admin = Auth::user();
+        $user = User::findOrFail($userId);
+
+        // Log the request
+        Log::info('Admin requested invoice generation', [
+            'admin_id' => $admin->id,
+            'user_id' => $user->id,
+            'invoice_id' => $invoiceId
+        ]);
 
         // Dispatch the job to generate the invoice PDF in the background
-        GenerateInvoicePdf::dispatch($user, $invoiceId, [
+        GenerateAdminInvoicePdf::dispatch($admin, $user, $invoiceId, [
             'vendor' => config('app.name'),
             'product' => 'Subscription Service',
             'street' => config('invoice.street', 'Main Street 1'),
@@ -40,11 +50,12 @@ class InvoiceController extends Controller
     }
 
     /**
-     * Generate multiple invoices in a batch.
+     * Generate multiple invoices in a batch for a specific user.
      */
-    public function generateBatch(Request $request)
+    public function generateBatch(Request $request, string $userId)
     {
-        $user = Auth::user();
+        $admin = Auth::user();
+        $user = User::findOrFail($userId);
 
         // Validate the request
         $validated = $request->validate([
@@ -55,13 +66,14 @@ class InvoiceController extends Controller
         $invoiceIds = $validated['invoice_ids'];
 
         // Log the batch request
-        Log::info('Batch invoice generation requested', [
+        Log::info('Admin requested batch invoice generation', [
+            'admin_id' => $admin->id,
             'user_id' => $user->id,
             'invoice_count' => count($invoiceIds)
         ]);
 
         // Dispatch the batch processing job
-        ProcessInvoiceBatch::dispatch($user, $invoiceIds, [
+        ProcessAdminInvoiceBatch::dispatch($admin, $user, $invoiceIds, [
             'vendor' => config('app.name'),
             'product' => 'Subscription Service',
             'street' => config('invoice.street', 'Main Street 1'),
@@ -87,42 +99,23 @@ class InvoiceController extends Controller
      */
     public function download(Request $request, string $path)
     {
-        $user = Auth::user();
+        $admin = Auth::user();
 
         // Log the requested path for debugging
-        Log::info('Invoice download requested', [
-            'user_id' => $user->id,
+        Log::info('Admin invoice download requested', [
+            'admin_id' => $admin->id,
             'requested_path' => $path
         ]);
 
-        // Extract the invoice ID from the path
-        // The path format is typically 'invoices/user_id/invoice_id_timestamp.pdf'
-        // We need to extract the invoice ID from this path
-
-        // First, check if this is a full path or just an invoice ID
-        if (str_contains($path, 'invoice_')) {
-            // This appears to be a filename with the invoice ID embedded
-            // Extract the invoice ID from the filename (format: invoice_in_INVOICE_ID_timestamp.pdf)
-            preg_match('/invoice_in_([A-Za-z0-9]+)_/', $path, $matches);
-
-            if (isset($matches[1])) {
-                $invoiceId = $matches[1];
-                Log::info('Extracted invoice ID from filename', [
-                    'invoice_id' => $invoiceId
-                ]);
-
-                // Use the downloadInvoice method from Cashier
-                return $this->downloadInvoiceById($invoiceId);
-            }
-        }
-
-        // If we couldn't extract an invoice ID, try to serve the file directly
-        $fullPath = 'invoices/' . $user->id . '/' . basename($path);
-
+        // Extract the invoice ID and user ID from the path
+        // The path format is typically 'admin_invoices/admin_id/user_id/invoice_id_timestamp.pdf'
+        
         // Check if the file exists
+        $fullPath = 'admin_invoices/' . $admin->id . '/' . basename($path);
+        
         if (!Storage::disk('private')->exists($fullPath)) {
-            Log::error('Invoice file not found', [
-                'user_id' => $user->id,
+            Log::error('Admin invoice file not found', [
+                'admin_id' => $admin->id,
                 'path' => $fullPath
             ]);
 
@@ -144,102 +137,26 @@ class InvoiceController extends Controller
     }
 
     /**
-     * Helper method to download an invoice by ID.
-     */
-    private function downloadInvoiceById(string $invoiceId)
-    {
-        $user = Auth::user();
-
-        try {
-            return $user->downloadInvoice($invoiceId, [
-                'vendor' => config('app.name'),
-                'product' => 'Subscription Service',
-                'street' => config('invoice.street', 'Main Street 1'),
-                'location' => config('invoice.location', '2000 Antwerp, Belgium'),
-                'phone' => config('invoice.phone', '+32 499 00 00 00'),
-                'email' => config('invoice.email', 'info@example.com'),
-                'url' => config('app.url'),
-                'vendorVat' => config('invoice.vat', 'BE123456789'),
-            ]);
-        } catch (\Exception $e) {
-            Log::error('Failed to download invoice by ID', [
-                'user_id' => $user->id,
-                'invoice_id' => $invoiceId,
-                'error' => $e->getMessage()
-            ]);
-
-            abort(404, 'Invoice not found or could not be generated');
-        }
-    }
-
-    /**
-     * Download an invoice directly (synchronous).
-     * This is a fallback method for direct downloads.
-     */
-    public function downloadDirect(Request $request, string $invoiceId)
-    {
-        $user = Auth::user();
-
-        // Log the requested invoice ID
-        Log::info('Direct invoice download requested', [
-            'user_id' => $user->id,
-            'invoice_id' => $invoiceId
-        ]);
-
-        try {
-            // Check if the invoice ID already has the 'in_' prefix
-            // If not, add it (Stripe invoice IDs always start with 'in_')
-            if (!str_starts_with($invoiceId, 'in_')) {
-                $invoiceId = 'in_' . $invoiceId;
-
-                Log::info('Added prefix to invoice ID', [
-                    'adjusted_invoice_id' => $invoiceId
-                ]);
-            }
-
-            return $user->downloadInvoice($invoiceId, [
-                'vendor' => config('app.name'),
-                'product' => 'Subscription Service',
-                'street' => config('invoice.street', 'Main Street 1'),
-                'location' => config('invoice.location', '2000 Antwerp, Belgium'),
-                'phone' => config('invoice.phone', '+32 499 00 00 00'),
-                'email' => config('invoice.email', 'info@example.com'),
-                'url' => config('app.url'),
-                'vendorVat' => config('invoice.vat', 'BE123456789'),
-            ]);
-        } catch (\Exception $e) {
-            Log::error('Failed to download invoice directly', [
-                'user_id' => $user->id,
-                'invoice_id' => $invoiceId,
-                'error' => $e->getMessage()
-            ]);
-
-            return back()->with('error', 'Failed to download invoice. Please try again later.');
-        }
-    }
-
-    /**
      * Download all invoices from a batch.
-     * This creates a zip file containing all the invoices from the batch.
      */
     public function downloadBatch(Request $request, string $batchId)
     {
-        $user = Auth::user();
+        $admin = Auth::user();
 
         // Log the requested batch ID
-        Log::info('Batch invoice download requested', [
-            'user_id' => $user->id,
+        Log::info('Admin batch invoice download requested', [
+            'admin_id' => $admin->id,
             'batch_id' => $batchId
         ]);
 
         try {
-            // Find all invoice files for this user and batch
-            $invoiceDir = 'invoices/' . $user->id;
+            // Find all invoice files for this admin and batch
+            $invoiceDir = 'admin_invoices/' . $admin->id;
 
             // Check if the directory exists
             if (!Storage::disk('private')->exists($invoiceDir)) {
-                Log::error('Invoice directory not found', [
-                    'user_id' => $user->id,
+                Log::error('Admin invoice directory not found', [
+                    'admin_id' => $admin->id,
                     'directory' => $invoiceDir
                 ]);
 
@@ -250,7 +167,6 @@ class InvoiceController extends Controller
             $files = Storage::disk('private')->files($invoiceDir);
 
             // Filter files to only include those from this batch
-            // The batch ID is included in the filename when generated
             $batchFiles = [];
             foreach ($files as $file) {
                 // Check if the file is a PDF and contains the batch ID
@@ -261,8 +177,8 @@ class InvoiceController extends Controller
 
             // If no files found, redirect back with an error
             if (empty($batchFiles)) {
-                Log::warning('No invoice files found for batch', [
-                    'user_id' => $user->id,
+                Log::warning('No admin invoice files found for batch', [
+                    'admin_id' => $admin->id,
                     'batch_id' => $batchId
                 ]);
 
@@ -285,7 +201,7 @@ class InvoiceController extends Controller
             }
 
             // For multiple files, create a zip archive
-            $zipFileName = 'invoices_batch_' . substr($batchId, 0, 8) . '_' . date('Ymd_His') . '.zip';
+            $zipFileName = 'admin_invoices_batch_' . substr($batchId, 0, 8) . '_' . date('Ymd_His') . '.zip';
             $zipFilePath = storage_path('app/private/temp/' . $zipFileName);
 
             // Create the temp directory if it doesn't exist
@@ -296,8 +212,8 @@ class InvoiceController extends Controller
             // Create a new zip archive
             $zip = new \ZipArchive();
             if ($zip->open($zipFilePath, \ZipArchive::CREATE) !== true) {
-                Log::error('Failed to create zip archive', [
-                    'user_id' => $user->id,
+                Log::error('Failed to create zip archive for admin', [
+                    'admin_id' => $admin->id,
                     'batch_id' => $batchId
                 ]);
 
@@ -324,8 +240,8 @@ class InvoiceController extends Controller
             )->deleteFileAfterSend(true);
 
         } catch (\Exception $e) {
-            Log::error('Failed to download batch invoices', [
-                'user_id' => $user->id,
+            Log::error('Failed to download batch invoices for admin', [
+                'admin_id' => $admin->id,
                 'batch_id' => $batchId,
                 'error' => $e->getMessage(),
                 'trace' => $e->getTraceAsString()

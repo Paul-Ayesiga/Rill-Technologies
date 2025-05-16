@@ -10,6 +10,9 @@ import { initializeTheme } from './composables/useAppearance';
 // Import Echo for real-time notifications
 import './echo';
 
+// Import global Lucide icons component
+import LucideIcons from './components/global/LucideIcons.vue';
+
 // Extend ImportMeta interface for Vite...
 declare module 'vite/client' {
     interface ImportMetaEnv {
@@ -29,14 +32,39 @@ createInertiaApp({
     title: (title) => `${title} - ${appName}`,
     resolve: (name) => resolvePageComponent(`./pages/${name}.vue`, import.meta.glob<DefineComponent>('./pages/**/*.vue')),
     setup({ el, App, props, plugin }) {
-        createApp({ render: () => h(App, props) })
-            .use(plugin)
-            .use(ZiggyVue)
-            .mount(el);
+        const app = createApp({
+            render: () => [
+                h(App, props),
+                // h(LucideIcons) // Add the global Lucide icons component
+            ]
+        });
+
+        app.use(plugin)
+           .use(ZiggyVue)
+           .mount(el);
     },
     progress: {
-        color: '#4B5563',
-        showSpinner: true,
+        color: '#FBBF24', // Amber-400 yellow color
+        showSpinner: false, // Default Inertia progress bar doesn't have a spinner
+        delay: 0, // Start showing immediately
+        includeCSS: true, // Include default CSS
+        // Add custom CSS to increase z-index
+        css: `
+            #nprogress {
+                pointer-events: none;
+                z-index: 9999 !important; /* Higher z-index to appear above all elements */
+            }
+
+            #nprogress .bar {
+                background: #FBBF24;
+                position: fixed;
+                z-index: 9999 !important;
+                top: 0;
+                left: 0;
+                width: 100%;
+                height: 3px;
+            }
+        `,
     },
 });
 

@@ -12,7 +12,7 @@ import {
 } from '@/components/ui/table';
 import {
   ArrowLeft, User, CreditCard, FileText, FileDown,
-  CheckCircle, AlertTriangle, Ban, Zap, RefreshCw
+  CheckCircle, AlertTriangle, Ban, Zap, RefreshCw, Eye
 } from 'lucide-vue-next';
 import { toast } from 'vue-sonner';
 import {
@@ -69,6 +69,8 @@ const cancelDialogOpen = ref(false);
 const cancelType = ref('end_of_period');
 const isCancelling = ref(false);
 const isGeneratingInvoice = ref<Record<string, boolean>>({});
+const isGeneratingBatch = ref(false);
+const selectedInvoices = ref<string[]>([]);
 
 // Function to format currency
 function formatCurrency(amount: number | string | null | undefined): string {
@@ -119,7 +121,7 @@ function cancelSubscription() {
       cancelDialogOpen.value = false;
       isCancelling.value = false;
     },
-    onError: (errors) => {
+    onError: (errors: any) => {
       toast.error('Failed to cancel subscription', {
         description: errors.message || 'There was an error cancelling the subscription.'
       });
@@ -134,7 +136,7 @@ function resumeSubscription() {
     onSuccess: () => {
       toast.success('Subscription resumed successfully');
     },
-    onError: (errors) => {
+    onError: (errors: any) => {
       toast.error('Failed to resume subscription', {
         description: errors.message || 'There was an error resuming the subscription.'
       });
@@ -148,7 +150,7 @@ function syncSubscription() {
     onSuccess: () => {
       toast.success('Subscription synced with Stripe');
     },
-    onError: (errors) => {
+    onError: (errors: any) => {
       toast.error('Failed to sync subscription with Stripe', {
         description: errors.message || 'There was an error syncing the subscription.'
       });
@@ -161,12 +163,12 @@ function generateInvoicePdf(invoiceId: string) {
   // Set the loading state for this invoice
   isGeneratingInvoice.value[invoiceId] = true;
 
-  // Navigate to the invoice generation route
-  router.visit(route('invoice.generate', invoiceId), {
+  // Navigate to the admin invoice generation route
+  router.visit(route('admin.invoice.generate', [props.subscription.user.id, invoiceId]), {
     preserveState: true,
     onSuccess: () => {
       toast.success('Invoice generation started', {
-        description: 'Your invoice is being generated. You will be notified when it is ready for download.'
+        description: 'The invoice is being generated. You will be notified when it is ready for download.'
       });
       isGeneratingInvoice.value[invoiceId] = false;
     },
@@ -175,6 +177,59 @@ function generateInvoicePdf(invoiceId: string) {
         description: errors.message || 'There was an error generating the invoice.'
       });
       isGeneratingInvoice.value[invoiceId] = false;
+    }
+  });
+}
+
+// Function to toggle invoice selection for batch processing
+function toggleInvoiceSelection(invoiceId: string) {
+  const index = selectedInvoices.value.indexOf(invoiceId);
+  if (index === -1) {
+    selectedInvoices.value.push(invoiceId);
+  } else {
+    selectedInvoices.value.splice(index, 1);
+  }
+}
+
+// Function to select all invoices
+function selectAllInvoices() {
+  if (selectedInvoices.value.length === props.invoices.length) {
+    // If all are selected, deselect all
+    selectedInvoices.value = [];
+  } else {
+    // Otherwise, select all
+    selectedInvoices.value = props.invoices.map((invoice: Invoice) => invoice.id);
+  }
+}
+
+// Function to generate batch of invoices
+function generateBatchInvoices() {
+  if (selectedInvoices.value.length === 0) {
+    toast.error('No invoices selected', {
+      description: 'Please select at least one invoice to generate.'
+    });
+    return;
+  }
+
+  isGeneratingBatch.value = true;
+
+  router.post(route('admin.invoice.generate-batch', props.subscription.user.id), {
+    invoice_ids: selectedInvoices.value
+  }, {
+    preserveState: true,
+    onSuccess: () => {
+      toast.success('Batch invoice generation started', {
+        description: `Generating ${selectedInvoices.value.length} invoices. You will be notified of progress and completion.`
+      });
+      isGeneratingBatch.value = false;
+      // Clear selections after successful submission
+      selectedInvoices.value = [];
+    },
+    onError: (errors: any) => {
+      toast.error('Failed to generate batch invoices', {
+        description: errors.message || 'There was an error generating the invoices.'
+      });
+      isGeneratingBatch.value = false;
     }
   });
 }
@@ -345,15 +400,42 @@ const breadcrumbs: BreadcrumbItem[] = [
             <!-- Invoices Table -->
             <Card>
               <CardHeader>
-                <CardTitle>Invoices</CardTitle>
-                <CardDescription>
-                  Customer billing history with payment status and transaction details. All amounts are in USD.
-                </CardDescription>
+                <div class="flex flex-col md:flex-row md:items-center md:justify-between gap-4">
+                  <div>
+                    <CardTitle>Invoices</CardTitle>
+                    <CardDescription>
+                      Customer billing history with payment status and transaction details. All amounts are in USD.
+                    </CardDescription>
+                  </div>
+                  <div class="flex items-center gap-2">
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      @click="selectAllInvoices"
+                      v-if="invoices.length > 0"
+                    >
+                      {{ selectedInvoices.length === invoices.length ? 'Deselect All' : 'Select All' }}
+                    </Button>
+                    <Button
+                      variant="default"
+                      size="sm"
+                      @click="generateBatchInvoices"
+                      :disabled="isGeneratingBatch || selectedInvoices.length === 0"
+                    >
+                      <FileDown class="h-4 w-4 mr-1" />
+                      <span v-if="isGeneratingBatch">Processing...</span>
+                      <span v-else>Generate Selected</span>
+                    </Button>
+                  </div>
+                </div>
               </CardHeader>
               <CardContent>
                 <Table>
                   <TableHeader>
                     <TableRow>
+                      <TableHead class="w-[50px]">
+                        <span class="sr-only">Select</span>
+                      </TableHead>
                       <TableHead>Invoice ID</TableHead>
                       <TableHead>Date</TableHead>
                       <TableHead>Amount</TableHead>
@@ -363,6 +445,14 @@ const breadcrumbs: BreadcrumbItem[] = [
                   </TableHeader>
                   <TableBody>
                     <TableRow v-for="invoice in invoices" :key="invoice.id">
+                      <TableCell>
+                        <input
+                          type="checkbox"
+                          :checked="selectedInvoices.includes(invoice.id)"
+                          @change="toggleInvoiceSelection(invoice.id)"
+                          class="rounded"
+                        />
+                      </TableCell>
                       <TableCell class="font-medium">{{ invoice.id }}</TableCell>
                       <TableCell>{{ invoice.date }}</TableCell>
                       <TableCell>{{ formatCurrency(invoice.total) }}</TableCell>
@@ -381,13 +471,13 @@ const breadcrumbs: BreadcrumbItem[] = [
                           >
                             <FileDown class="h-4 w-4 mr-1" />
                             <span v-if="isGeneratingInvoice[invoice.id]">Processing...</span>
-                            <span v-else>Download PDF</span>
+                            <span v-else>Generate PDF</span>
                           </Button>
                         </div>
                       </TableCell>
                     </TableRow>
                     <TableRow v-if="invoices.length === 0">
-                      <TableCell colspan="5" class="text-center py-4">
+                      <TableCell colspan="6" class="text-center py-4">
                         No invoices found for this subscription
                       </TableCell>
                     </TableRow>

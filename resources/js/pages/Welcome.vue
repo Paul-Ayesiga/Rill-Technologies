@@ -6,7 +6,7 @@ import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigge
 import { Button } from '@/components/ui/button';
 import { Sun, Moon, Laptop, Menu as MenuIcon, Cpu, Building2, BrainCircuit, Code, LineChart, Layers, Zap, Workflow, ShoppingCart, Heart, PieChart, Check, Headset, Search, CalendarCheck, Settings, Brain, Rocket, ArrowRight, User, ArrowUp, MessageSquare } from 'lucide-vue-next';
 import { ScrollArea, ScrollBar } from '@/components/ui/scroll-area';
-import AdBanner from '@/components/AdBanner.vue';
+import AdDisplay from '@/components/AdDisplay.vue';
 
 interface PageProps {
     auth: {
@@ -204,13 +204,9 @@ const toggleAgentChat = () => {
     <div class="bg-gray-900 text-gray-50 dark:bg-gray-900 dark:text-gray-100 transition-opacity duration-1000"
         :class="{ 'opacity-0': !contentVisible, 'opacity-100': contentVisible }">
 
-        <!-- Ad Banner -->
-        <AdBanner
-          position="right"
-          adId="welcome-ad-1"
-          adUrl="http://localhost:8000/dashboard"
-          adImageUrl="/ads/ad1.png"
-          adText="Special Offer"
+        <!-- Ads for Welcome page -->
+        <AdDisplay
+          page="welcome"
         />
         <div class="relative top-0">
             <div class="absolute inset-0 overflow-hidden">

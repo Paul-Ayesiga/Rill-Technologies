@@ -18,7 +18,7 @@ import { Skeleton } from '@/components/ui/skeleton';
 import {
   Bot, Plus, LineChart, ArrowUpRight, ArrowDownRight,
   Command as CommandIcon, ArrowRight, Users, CreditCard,
-  Check, X
+  Check, X, WifiOff, 
 } from 'lucide-vue-next';
 
 const breadcrumbs: BreadcrumbItem[] = [
@@ -51,6 +51,7 @@ interface Agent {
 const props = defineProps<{
   agents?: Agent[];
   name: string;
+  connectionError?: boolean;
   quote?: {
     message: string;
     author: string;
@@ -143,6 +144,14 @@ const insights = ref({
 onMounted(() => {
   setTimeout(() => {
     isLoading.value = false;
+
+    // Check if there's a connection error
+    if (props.connectionError) {
+      toast.error('Connection Error', {
+        description: 'Unable to connect to payment service. Agent creation and management are unavailable until connection is restored.',
+        duration: 10000 // Show for 10 seconds
+      });
+    }
   }, 1000);
 });
 
@@ -233,6 +242,21 @@ const formatLastActive = (agent: Agent | null): string => {
     />
 
     <div class="flex h-full flex-1 flex-col gap-4 p-4">
+      <!-- Connection Error Alert -->
+      <div v-if="connectionError" class="bg-red-50 dark:bg-red-950 border border-red-200 dark:border-red-800 rounded-md p-4 mb-4">
+        <div class="flex">
+          <div class="flex-shrink-0">
+            <WifiOff class="h-5 w-5 text-red-400" />
+          </div>
+          <div class="ml-3">
+            <h3 class="text-sm font-medium text-red-800 dark:text-red-300">Connection Issue</h3>
+            <div class="mt-2 text-sm text-red-700 dark:text-red-400">
+              <p>Unable to connect to payment service. Agent creation and management are unavailable until connection is restored.</p>
+            </div>
+          </div>
+        </div>
+      </div>
+
       <!-- Dashboard Header with Actions -->
       <div class="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4 mb-2">
         <div>

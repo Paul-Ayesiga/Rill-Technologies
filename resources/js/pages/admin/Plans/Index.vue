@@ -44,6 +44,8 @@ interface Plan {
   features: Feature[];
   trial_days: number | null;
   created: string;
+  active?: boolean;
+  archived?: boolean;
 }
 
 // Get props
@@ -105,7 +107,7 @@ function createPlan() {
       createForm.reset();
       toast.success('Plan created successfully');
     },
-    onError: (errors) => {
+    onError: (errors: any) => {
       toast.error('Failed to create plan', {
         description: Object.values(errors).flat().join(', ')
       });
@@ -123,7 +125,7 @@ function editPlan() {
       selectedPlan.value = null;
       toast.success('Plan updated successfully');
     },
-    onError: (errors) => {
+    onError: (errors: any) => {
       toast.error('Failed to update plan', {
         description: Object.values(errors).flat().join(', ')
       });
@@ -135,14 +137,17 @@ function editPlan() {
 function deletePlan() {
   if (!selectedPlan.value) return;
 
+  console.log('Archiving plan with ID:', selectedPlan.value.id);
+
   router.delete(route('admin.plans.destroy', selectedPlan.value.id), {
     onSuccess: () => {
       deleteDialogOpen.value = false;
       selectedPlan.value = null;
       toast.success('Plan archived successfully');
     },
-    onError: (errors) => {
-      toast.error('Failed to archive plan');
+    onError: (errors: any) => {
+      console.error('Archive plan error:', errors);
+      toast.error('Failed to archive plan: ' + (errors.error || 'Unknown error'));
     }
   });
 }
@@ -161,6 +166,21 @@ function openEditDialog(plan: Plan) {
 function openDeleteDialog(plan: Plan) {
   selectedPlan.value = plan;
   deleteDialogOpen.value = true;
+}
+
+// Function to unarchive a plan
+function unarchivePlan(plan: Plan) {
+  console.log('Unarchiving plan with ID:', plan.id);
+
+  router.post(route('admin.plans.unarchive', plan.id), {}, {
+    onSuccess: () => {
+      toast.success('Plan unarchived successfully');
+    },
+    onError: (errors: any) => {
+      console.error('Unarchive plan error:', errors);
+      toast.error('Failed to unarchive plan: ' + (errors.error || 'Unknown error'));
+    }
+  });
 }
 
 // Function to format currency
@@ -204,70 +224,139 @@ const breadcrumbs: BreadcrumbItem[] = [
               </Button>
             </div>
 
-            <!-- Plans Grid -->
-            <div v-if="plans.length > 0" class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
-              <Card v-for="plan in plans" :key="plan.id" class="flex flex-col">
-                <CardHeader>
-                  <div class="flex items-center justify-between">
-                    <CardTitle>{{ plan.name }}</CardTitle>
-                    <DropdownMenu>
-                      <DropdownMenuTrigger asChild>
-                        <Button variant="ghost" size="icon">
-                          <MoreHorizontal class="h-4 w-4" />
-                        </Button>
-                      </DropdownMenuTrigger>
-                      <DropdownMenuContent align="end">
-                        <DropdownMenuItem @click="openEditDialog(plan)">
-                          <Edit class="h-4 w-4 mr-2" />
-                          Edit Plan
-                        </DropdownMenuItem>
-                        <DropdownMenuSeparator />
-                        <DropdownMenuItem @click="openDeleteDialog(plan)" class="text-red-500">
-                          <Trash2 class="h-4 w-4 mr-2" />
-                          Archive Plan
-                        </DropdownMenuItem>
-                      </DropdownMenuContent>
-                    </DropdownMenu>
-                  </div>
-                  <CardDescription>{{ plan.description }}</CardDescription>
-                </CardHeader>
-                <CardContent class="flex-grow">
-                  <div class="mb-4">
-                    <div class="flex items-end">
-                      <span class="text-2xl font-bold">{{ formatCurrency(plan.price) }}</span>
-                      <span class="text-muted-foreground ml-1">/ {{ plan.interval }}</span>
+            <!-- Active Plans Section -->
+            <div class="mb-8">
+              <h3 class="text-xl font-semibold mb-4">Active Plans</h3>
+              <div v-if="plans.filter(p => !p.archived).length > 0" class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
+                <Card v-for="plan in plans.filter(p => !p.archived)" :key="plan.id" class="flex flex-col">
+                  <CardHeader>
+                    <div class="flex items-center justify-between">
+                      <CardTitle>{{ plan.name }}</CardTitle>
+                      <DropdownMenu>
+                        <DropdownMenuTrigger asChild>
+                          <Button variant="ghost" size="icon">
+                            <MoreHorizontal class="h-4 w-4" />
+                          </Button>
+                        </DropdownMenuTrigger>
+                        <DropdownMenuContent align="end">
+                          <DropdownMenuItem @click="openEditDialog(plan)">
+                            <Edit class="h-4 w-4 mr-2" />
+                            Edit Plan
+                          </DropdownMenuItem>
+                          <DropdownMenuSeparator />
+                          <DropdownMenuItem @click="openDeleteDialog(plan)" class="text-red-500">
+                            <Trash2 class="h-4 w-4 mr-2" />
+                            Archive Plan
+                          </DropdownMenuItem>
+                        </DropdownMenuContent>
+                      </DropdownMenu>
                     </div>
-                    <div v-if="plan.trial_days" class="mt-1 text-sm text-green-600">
-                      {{ plan.trial_days }} day{{ plan.trial_days !== 1 ? 's' : '' }} free trial
+                    <CardDescription>{{ plan.description }}</CardDescription>
+                  </CardHeader>
+                  <CardContent class="flex-grow">
+                    <div class="mb-4">
+                      <div class="flex items-end">
+                        <span class="text-2xl font-bold">{{ formatCurrency(plan.price) }}</span>
+                        <span class="text-muted-foreground ml-1">/ {{ plan.interval }}</span>
+                      </div>
+                      <div v-if="plan.trial_days" class="mt-1 text-sm text-green-600">
+                        {{ plan.trial_days }} day{{ plan.trial_days !== 1 ? 's' : '' }} free trial
+                      </div>
                     </div>
-                  </div>
-                  <div class="space-y-2">
-                    <h3 class="text-sm font-medium">Features:</h3>
-                    <ul class="space-y-2">
-                      <li v-for="(feature, index) in plan.features" :key="index" class="flex items-start">
-                        <div v-if="feature.included" class="rounded-full p-0.5 mr-2 mt-0.5 text-green-500 flex-shrink-0">
-                          <Check class="h-4 w-4" />
-                        </div>
-                        <div v-else class="rounded-full p-0.5 mr-2 mt-0.5 text-gray-400 flex-shrink-0">
-                          <X class="h-4 w-4" />
-                        </div>
-                        <span :class="{ 'text-muted-foreground': !feature.included }">
-                          {{ feature.name }}
-                        </span>
-                      </li>
-                    </ul>
-                  </div>
-                </CardContent>
-                <CardFooter>
-                  <div class="text-sm text-muted-foreground">
-                    Created: {{ plan.created }}
-                  </div>
-                </CardFooter>
-              </Card>
+                    <div class="space-y-2">
+                      <h3 class="text-sm font-medium">Features:</h3>
+                      <ul class="space-y-2">
+                        <li v-for="(feature, index) in plan.features" :key="index" class="flex items-start">
+                          <div v-if="feature.included" class="rounded-full p-0.5 mr-2 mt-0.5 text-green-500 flex-shrink-0">
+                            <Check class="h-4 w-4" />
+                          </div>
+                          <div v-else class="rounded-full p-0.5 mr-2 mt-0.5 text-gray-400 flex-shrink-0">
+                            <X class="h-4 w-4" />
+                          </div>
+                          <span :class="{ 'text-muted-foreground': !feature.included }">
+                            {{ feature.name }}
+                          </span>
+                        </li>
+                      </ul>
+                    </div>
+                  </CardContent>
+                  <CardFooter>
+                    <div class="text-sm text-muted-foreground">
+                      Created: {{ plan.created }}
+                    </div>
+                  </CardFooter>
+                </Card>
+              </div>
+              <div v-else class="text-center py-6 bg-gray-50 dark:bg-gray-800 rounded-lg">
+                <p class="text-muted-foreground">No active plans available</p>
+              </div>
             </div>
 
-            <!-- No Plans Message -->
-            <div v-else class="text-center py-12">
+            <!-- Archived Plans Section -->
+            <div v-if="plans.filter(p => p.archived).length > 0">
+              <h3 class="text-xl font-semibold mb-4">Archived Plans</h3>
+              <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
+                <Card v-for="plan in plans.filter(p => p.archived)" :key="plan.id" class="flex flex-col border-gray-200 bg-gray-50 dark:bg-gray-800 dark:border-gray-700">
+                  <CardHeader>
+                    <div class="flex items-center justify-between">
+                      <div class="flex items-center gap-2">
+                        <CardTitle>{{ plan.name.replace(' (Archived)', '') }}</CardTitle>
+                        <Badge variant="outline" class="text-xs bg-gray-100 text-gray-700">Archived</Badge>
+                      </div>
+                      <DropdownMenu>
+                        <DropdownMenuTrigger asChild>
+                          <Button variant="ghost" size="icon">
+                            <MoreHorizontal class="h-4 w-4" />
+                          </Button>
+                        </DropdownMenuTrigger>
+                        <DropdownMenuContent align="end">
+                          <DropdownMenuItem @click="unarchivePlan(plan)">
+                            <Edit class="h-4 w-4 mr-2" />
+                            Unarchive Plan
+                          </DropdownMenuItem>
+                        </DropdownMenuContent>
+                      </DropdownMenu>
+                    </div>
+                    <CardDescription>{{ plan.description }}</CardDescription>
+                  </CardHeader>
+                  <CardContent class="flex-grow">
+                    <div class="mb-4">
+                      <div class="flex items-end">
+                        <span class="text-2xl font-bold">{{ formatCurrency(plan.price) }}</span>
+                        <span class="text-muted-foreground ml-1">/ {{ plan.interval }}</span>
+                      </div>
+                      <div v-if="plan.trial_days" class="mt-1 text-sm text-green-600">
+                        {{ plan.trial_days }} day{{ plan.trial_days !== 1 ? 's' : '' }} free trial
+                      </div>
+                    </div>
+                    <div class="space-y-2">
+                      <h3 class="text-sm font-medium">Features:</h3>
+                      <ul class="space-y-2">
+                        <li v-for="(feature, index) in plan.features" :key="index" class="flex items-start">
+                          <div v-if="feature.included" class="rounded-full p-0.5 mr-2 mt-0.5 text-green-500 flex-shrink-0">
+                            <Check class="h-4 w-4" />
+                          </div>
+                          <div v-else class="rounded-full p-0.5 mr-2 mt-0.5 text-gray-400 flex-shrink-0">
+                            <X class="h-4 w-4" />
+                          </div>
+                          <span :class="{ 'text-muted-foreground': !feature.included }">
+                            {{ feature.name }}
+                          </span>
+                        </li>
+                      </ul>
+                    </div>
+                  </CardContent>
+                  <CardFooter>
+                    <div class="text-sm text-muted-foreground">
+                      Created: {{ plan.created }}
+                    </div>
+                  </CardFooter>
+                </Card>
+              </div>
+            </div>
+
+            <!-- No Plans Message - Only show if there are no plans at all -->
+            <div v-if="plans.length === 0" class="text-center py-12">
               <Package class="h-12 w-12 mx-auto text-muted-foreground mb-4" />
               <h3 class="text-lg font-medium mb-2">No Plans Available</h3>
               <p class="text-muted-foreground mb-6 max-w-md mx-auto">
@@ -419,6 +508,9 @@ const breadcrumbs: BreadcrumbItem[] = [
             Are you sure you want to archive this plan? This will make it unavailable for new subscriptions.
             Existing subscriptions will not be affected.
           </DialogDescription>
+          <div class="mt-2 text-sm text-amber-600 dark:text-amber-400 bg-amber-50 dark:bg-amber-950/30 p-2 rounded">
+            <strong>Note:</strong> The plan will be archived in Stripe. All features and settings will be preserved.
+          </div>
         </DialogHeader>
         <div class="py-4">
           <p class="font-medium">{{ selectedPlan?.name }}</p>

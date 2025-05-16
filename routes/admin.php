@@ -29,12 +29,21 @@ Route::middleware(['auth', 'admin'])->group(function () {
         Route::post('/{id}/sync', [App\Http\Controllers\Admin\SubscriptionsController::class, 'sync'])->name('sync');
     });
 
+    // Admin Invoice Management
+    Route::prefix('admin/invoice')->name('admin.invoice.')->group(function () {
+        Route::get('/generate/{userId}/{invoiceId}', [App\Http\Controllers\Admin\AdminInvoiceController::class, 'generate'])->name('generate');
+        Route::post('/generate-batch/{userId}', [App\Http\Controllers\Admin\AdminInvoiceController::class, 'generateBatch'])->name('generate-batch');
+        Route::get('/download/{path}', [App\Http\Controllers\Admin\AdminInvoiceController::class, 'download'])->name('download');
+        Route::get('/download-batch/{batchId}', [App\Http\Controllers\Admin\AdminInvoiceController::class, 'downloadBatch'])->name('download-batch');
+    });
+
     // Plans Management
     Route::prefix('admin/plans')->name('admin.plans.')->group(function () {
         Route::get('/', [PlanController::class, 'index'])->name('index');
         Route::post('/', [PlanController::class, 'store'])->name('store');
         Route::put('/{id}', [PlanController::class, 'update'])->name('update');
         Route::delete('/{id}', [PlanController::class, 'destroy'])->name('destroy');
+        Route::post('/{id}/unarchive', [PlanController::class, 'unarchive'])->name('unarchive');
     });
 
     // Roles & Permissions Management
@@ -71,4 +80,16 @@ Route::middleware(['auth', 'admin'])->group(function () {
     Route::get('admin/settings/session',[SessionController::class, 'index'])->name('admin.session.index');
     Route::delete('admin/settings/session/{id}', [SessionController::class, 'destroy'])->name('admin.session.destroy');
     Route::post('admin/settings/session/logout-others', [SessionController::class, 'logoutOthers'])->name('admin.session.logout.others');
+
+    // Ads Management
+    Route::prefix('admin/ads')->name('admin.ads.')->group(function () {
+        Route::get('/', [App\Http\Controllers\Admin\AdsController::class, 'index'])->name('index');
+        Route::post('/', [App\Http\Controllers\Admin\AdsController::class, 'store'])->name('store');
+        Route::put('/{id}', [App\Http\Controllers\Admin\AdsController::class, 'update'])->name('update');
+        Route::delete('/{id}', [App\Http\Controllers\Admin\AdsController::class, 'destroy'])->name('destroy');
+        Route::put('/{id}/toggle-status', [App\Http\Controllers\Admin\AdsController::class, 'toggleStatus'])->name('toggle-status');
+    });
+
+    // Admin uses the same notification routes as regular users
+    // The NotificationController handles both admin and user notifications
 });

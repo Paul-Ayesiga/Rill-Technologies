@@ -5,7 +5,7 @@
 import { ref, onMounted, computed } from 'vue';
 import { fetchAds, trackAdClick as trackClick, getAdsByType } from '@/services/AdService';
 
-// Props for the ad banner
+// Props for the side banner ad
 const props = defineProps<{
   position?: 'left' | 'right'; // Position of the ad banner
   adId?: string; // Unique ID for the ad (for tracking)
@@ -25,10 +25,7 @@ const isLoading = ref(false);
 const position = computed(() => props.position || 'right');
 const adId = computed(() => adData.value?.ad_id || props.adId || 'ad-' + Math.random().toString(36).substring(2, 9));
 const adUrl = computed(() => adData.value?.url || props.adUrl || '#');
-
-// Use image URL directly as in the ad view modal
 const adImageUrl = computed(() => adData.value?.image_url || props.adImageUrl || '/storage/ads/default-ad.jpg');
-
 const adText = computed(() => adData.value?.title || props.adText || 'Advertisement');
 
 // Close the ad
@@ -58,23 +55,36 @@ const fetchAdData = async () => {
 
   isLoading.value = true;
   try {
+    console.log(`SideBannerAd: Fetching ads for page ${props.page || 'all'} with position ${position.value}`);
     const ads = await fetchAds(props.page || 'all');
-    const bannerAds = getAdsByType(ads, 'banner', position.value);
+    console.log('SideBannerAd: Available ads:', ads);
 
-    if (bannerAds.length > 0) {
+    // Look for side banner ads (type: 'banner')
+    const sideAds = ads.filter(ad => {
+      const matches = ad.type === 'banner' && ad.position === position.value;
+      console.log(`SideBannerAd: Ad ${ad.id} (${ad.type}, ${ad.position}) matches position ${position.value}? ${matches}`);
+      return matches;
+    });
+
+    console.log(`SideBannerAd: Found ${sideAds.length} matching ads`);
+
+    if (sideAds.length > 0) {
       // Use the first matching ad
-      adData.value = bannerAds[0];
+      adData.value = sideAds[0];
+      console.log('SideBannerAd: Using ad:', adData.value);
 
       // Check if this ad was previously closed
       if (localStorage.getItem(`ad-closed-${adData.value.ad_id}`) === 'true') {
+        console.log('SideBannerAd: Ad was previously closed');
         isVisible.value = false;
       }
     } else {
       // No matching ads found
+      console.log('SideBannerAd: No matching ads found, hiding banner');
       isVisible.value = false;
     }
   } catch (error) {
-    console.error('Error fetching ad data:', error);
+    console.error('SideBannerAd: Error fetching ad data:', error);
     isVisible.value = false;
   } finally {
     isLoading.value = false;

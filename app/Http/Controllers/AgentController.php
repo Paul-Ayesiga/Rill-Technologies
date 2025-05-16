@@ -10,6 +10,7 @@ use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Carbon;
 use Inertia\Inertia;
+use Laravel\Cashier\Billable;
 use Stripe\Stripe;
 
 class AgentController extends Controller
@@ -25,22 +26,66 @@ class AgentController extends Controller
         // Get subscription data
         $subscription = null;
 
-        if ($user->hasDefaultPaymentMethod()) {
-            $paymentMethod = $user->defaultPaymentMethod();
+        try {
+            if ($user->hasDefaultPaymentMethod()) {
+                try {
+                    $paymentMethod = $user->defaultPaymentMethod();
+                } catch (\Stripe\Exception\ApiConnectionException $e) {
+                    // Handle Stripe connection error with a meaningful message
+                    Log::error('Unable to connect to payment service: ' . $e->getMessage());
 
-            // Get the subscription type from the database or use 'default' as fallback
-            $subscriptionType = $this->getSubscriptionType($user);
+                    // Add a flash message for the user
+                    session()->flash('warning', 'Unable to connect to payment service. Your subscription information will be displayed from local data. Some features may be limited until connection is restored.');
 
-            if ($user->subscribed($subscriptionType)) {
-                $subscription = $user->subscription($subscriptionType);
+                    // Continue without payment method
+                    $paymentMethod = null;
+                }
 
-                // Format subscription data
-                $subscription = $this->formatSubscription($subscription, $paymentMethod);
+                // Get the subscription type from the database or use 'default' as fallback
+                $subscriptionType = $this->getSubscriptionType($user);
+
+                if ($user->subscribed($subscriptionType)) {
+                    $subscription = $user->subscription($subscriptionType);
+
+                    // Format subscription data with error handling
+                    try {
+                        $subscription = $this->formatSubscription($subscription, $paymentMethod);
+                    } catch (\Stripe\Exception\ApiConnectionException $e) {
+                        // Handle Stripe connection error with a meaningful message
+                        Log::error('Unable to connect to payment service when retrieving subscription details: ' . $e->getMessage());
+
+                        // If we haven't already shown a warning, show one now
+                        if (!session()->has('warning')) {
+                            session()->flash('warning', 'Unable to connect to payment service. Your subscription information will be displayed from local data. Some features may be limited until connection is restored.');
+                        }
+
+                        // Create a fallback subscription object with data from the database
+                        $subscription = $this->createFallbackSubscription($subscription, $paymentMethod);
+                    }
+                }
             }
+        } catch (\Exception $e) {
+            // Handle any other exceptions with a meaningful message
+            Log::error('Error retrieving subscription data: ' . $e->getMessage());
+
+            // Add a flash message for the user
+            session()->flash('error', 'We encountered an issue retrieving your subscription information. Please try again later or contact support if the problem persists.');
+
+            // Continue without subscription data
+            $subscription = null;
         }
 
-        // Always get available plans
+        // Get available plans
         $plans = $this->getAvailablePlans();
+
+        // If plans is null, it means there was a connection error
+        // We'll still render the page, but the frontend will show a message
+        $connectionError = $plans === null;
+
+        // If there was a connection error, set plans to an empty array
+        if ($connectionError) {
+            $plans = [];
+        }
 
         // Determine which page to render based on the route
         $routeName = request()->route()->getName();
@@ -53,6 +98,7 @@ class AgentController extends Controller
                 'agents' => $agents,
                 'subscription' => $subscription,
                 'hasActiveSubscription' => $hasActiveSubscription,
+                'connectionError' => $connectionError,
             ]);
         }
 
@@ -60,6 +106,7 @@ class AgentController extends Controller
             'agents' => $agents,
             'subscription' => $subscription,
             'plans' => $plans,
+            'connectionError' => $connectionError,
         ]);
     }
 
@@ -67,40 +114,65 @@ class AgentController extends Controller
      * Format subscription data for the frontend.
      *
      * @param  \Laravel\Cashier\Subscription  $subscription
-     * @param  \Stripe\PaymentMethod  $paymentMethod
+     * @param  \Stripe\PaymentMethod|null  $paymentMethod
      * @return array
+     * @throws \Stripe\Exception\ApiConnectionException
      */
-    private function formatSubscription($subscription, $paymentMethod)
+    private function formatSubscription($subscription, $paymentMethod = null)
     {
         // Get plan details from Stripe
         Stripe::setApiKey(config('cashier.secret'));
-        $stripePlan = \Stripe\Price::retrieve($subscription->stripe_price);
-        $product = \Stripe\Product::retrieve($stripePlan->product);
 
-        // Get features based on the plan
-        $features = $this->getPlanFeatures($stripePlan->id);
+        try {
+            $stripePlan = \Stripe\Price::retrieve($subscription->stripe_price);
+            $product = \Stripe\Product::retrieve($stripePlan->product);
 
-        return [
-            'name' => $product->name,
-            'stripe_status' => $subscription->stripe_status,
-            'ends_at' => $subscription->ends_at ? $subscription->ends_at->toIso8601String() : null,
-            'trial_ends_at' => $subscription->trial_ends_at ? $subscription->trial_ends_at->toIso8601String() : null,
-            'stripe_price' => $subscription->stripe_price,
-            'price' => $stripePlan->unit_amount / 100,
-            'interval' => $stripePlan->recurring->interval,
-            'currency' => $stripePlan->currency,
-            'quantity' => $subscription->quantity,
-            'card_brand' => $paymentMethod ? $paymentMethod->card->brand : null,
-            'card_last_four' => $paymentMethod ? $paymentMethod->card->last4 : null,
-            'next_billing_date' => $this->getNextBillingDate($subscription) ?? $this->getFallbackBillingDate($subscription),
-            'features' => $features,
-        ];
+            // Get features based on the plan
+            $features = $this->getPlanFeatures($stripePlan->id);
+
+            // Get card details if available
+            $cardBrand = null;
+            $cardLastFour = null;
+
+            if ($paymentMethod) {
+                try {
+                    $cardBrand = $paymentMethod->card->brand;
+                    $cardLastFour = $paymentMethod->card->last4;
+                } catch (\Exception $e) {
+                    Log::warning('Could not get card details from payment method: ' . $e->getMessage());
+                }
+            }
+
+            return [
+                'name' => $product->name,
+                'stripe_status' => $subscription->stripe_status,
+                'ends_at' => $subscription->ends_at ? $subscription->ends_at->toIso8601String() : null,
+                'trial_ends_at' => $subscription->trial_ends_at ? $subscription->trial_ends_at->toIso8601String() : null,
+                'stripe_price' => $subscription->stripe_price,
+                'price' => $stripePlan->unit_amount / 100,
+                'interval' => $stripePlan->recurring->interval,
+                'currency' => $stripePlan->currency,
+                'quantity' => $subscription->quantity,
+                'card_brand' => $cardBrand,
+                'card_last_four' => $cardLastFour,
+                'next_billing_date' => $this->getNextBillingDate($subscription) ?? $this->getFallbackBillingDate($subscription),
+                'features' => $features,
+                'offline_mode' => false, // Flag to indicate this is online data
+            ];
+        } catch (\Stripe\Exception\ApiConnectionException $e) {
+            // Let the caller handle this specific exception
+            throw $e;
+        } catch (\Exception $e) {
+            // For other exceptions, log and return a fallback
+            Log::error('Error formatting subscription: ' . $e->getMessage());
+            return $this->createFallbackSubscription($subscription, $paymentMethod);
+        }
     }
 
     /**
      * Get available subscription plans.
      *
-     * @return array
+     * @return array|null
      */
     public function getAvailablePlans()
     {
@@ -113,13 +185,22 @@ class AgentController extends Controller
             foreach ($prices->data as $price) {
                 // Only include prices with recurring payments
                 if ($price->type === 'recurring') {
+                    // Get features for this plan
+                    $features = $this->getPlanFeatures($price->id);
+
+                    // If features is null, it means there was a connection error
+                    // Skip this plan and continue with the next one
+                    if ($features === null) {
+                        continue;
+                    }
+
                     $plans[] = [
                         'id' => $price->id,
                         'name' => $price->product->name,
                         'price' => $price->unit_amount / 100,
                         'interval' => $price->recurring->interval,
                         'currency' => $price->currency,
-                        'features' => $this->getPlanFeatures($price->id),
+                        'features' => $features,
                     ];
                 }
             }
@@ -128,44 +209,34 @@ class AgentController extends Controller
             if (count($plans) > 0) {
                 return $plans;
             }
+
+            // If no plans were found, return an empty array
+            return [];
+
+        } catch (\Stripe\Exception\ApiConnectionException $e) {
+            // Handle Stripe connection error specifically
+            Log::warning('Unable to connect to payment service when fetching plans: ' . $e->getMessage());
+
+            // Add a flash message for the user
+            session()->flash('error', 'Unable to connect to payment service. Subscription management is unavailable until connection is restored.');
+
+            // Return null to indicate a connection error
+            return null;
         } catch (\Exception $e) {
             Log::error('Error fetching Stripe plans in AgentController: ' . $e->getMessage());
-        }
 
-        // Fallback to hardcoded plans if Stripe fetch fails
-        return [
-            [
-                'id' => 'price_1RFkCl06DSRI9z5wXnLQZJnO',
-                'name' => 'Starter',
-                'price' => 29.99,
-                'interval' => 'month',
-                'currency' => 'usd',
-                'features' => $this->getPlanFeatures('price_1RFkCl06DSRI9z5wXnLQZJnO'),
-            ],
-            [
-                'id' => 'price_1RFkDK06DSRI9z5wJnLQZJnO',
-                'name' => 'Professional',
-                'price' => 79.99,
-                'interval' => 'month',
-                'currency' => 'usd',
-                'features' => $this->getPlanFeatures('price_1RFkDK06DSRI9z5wJnLQZJnO'),
-            ],
-            [
-                'id' => 'price_1RFkDr06DSRI9z5wJnLQZJnO',
-                'name' => 'Enterprise',
-                'price' => 199.99,
-                'interval' => 'month',
-                'currency' => 'usd',
-                'features' => $this->getPlanFeatures('price_1RFkDr06DSRI9z5wJnLQZJnO'),
-            ],
-        ];
+            // Return an empty array for other errors
+            return [];
+        }
     }
+
+
 
     /**
      * Get features for a specific plan.
      *
      * @param  string  $planId
-     * @return array
+     * @return array|null
      */
     public function getPlanFeatures($planId)
     {
@@ -177,116 +248,42 @@ class AgentController extends Controller
                 'expand' => ['product']
             ]);
 
-            // Get the product name
-            $productName = $price->product->name;
-
-            // Map features based on product name (case-insensitive)
-            $productNameLower = strtolower($productName);
-
-            if (strpos($productNameLower, 'starter') !== false) {
-                return $this->getStarterFeatures();
-            } elseif (strpos($productNameLower, 'professional') !== false) {
-                return $this->getProfessionalFeatures();
-            } elseif (strpos($productNameLower, 'enterprise') !== false) {
-                return $this->getEnterpriseFeatures();
+            // Check if product has metadata with features
+            if (isset($price->product->metadata->features)) {
+                try {
+                    // Try to parse features from metadata
+                    $featuresData = json_decode($price->product->metadata->features, true);
+                    if (is_array($featuresData)) {
+                        return $featuresData;
+                    }
+                } catch (\Exception $e) {
+                    Log::warning('Failed to parse features from product metadata', [
+                        'product_id' => $price->product->id,
+                        'error' => $e->getMessage()
+                    ]);
+                }
             }
 
-            // If no specific match, return default features
-            return $this->getDefaultFeatures();
+            // If no features found in metadata, return an empty array
+            // This indicates that we couldn't find features but the connection was successful
+            return [];
 
+        } catch (\Stripe\Exception\ApiConnectionException $e) {
+            // Handle Stripe connection error
+            Log::error('Unable to connect to payment service when fetching plan features: ' . $e->getMessage());
+
+            // Return null to indicate a connection error
+            // The caller should handle this by showing a toast notification
+            return null;
         } catch (\Exception $e) {
             Log::error('Error fetching plan features: ' . $e->getMessage());
 
-            // Fallback to hardcoded features based on price ID patterns
-            // This is a backup in case the Stripe API call fails
-            if (strpos($planId, '1RFkCl') !== false) {
-                return $this->getStarterFeatures();
-            } elseif (strpos($planId, '1RFkDK') !== false) {
-                return $this->getProfessionalFeatures();
-            } elseif (strpos($planId, '1RFkDr') !== false) {
-                return $this->getEnterpriseFeatures();
-            }
-
-            // Default fallback
-            return $this->getDefaultFeatures();
+            // Return an empty array for other errors
+            return [];
         }
     }
 
-    /**
-     * Get features for the Starter plan.
-     *
-     * @return array
-     */
-    private function getStarterFeatures()
-    {
-        return [
-            ['name' => '1 AI Agent', 'included' => true],
-            ['name' => '5,000 interactions per month', 'included' => true],
-            ['name' => 'Basic analytics', 'included' => true],
-            ['name' => 'Email support', 'included' => true],
-            ['name' => 'File uploads (up to 50MB)', 'included' => true],
-            ['name' => 'Website training', 'included' => true],
-            ['name' => 'API access', 'included' => false],
-            ['name' => 'Custom branding', 'included' => false],
-            ['name' => 'Advanced analytics', 'included' => false],
-            ['name' => 'Priority support', 'included' => false],
-        ];
-    }
 
-    /**
-     * Get features for the Professional plan.
-     *
-     * @return array
-     */
-    private function getProfessionalFeatures()
-    {
-        return [
-            ['name' => '5 AI Agents', 'included' => true],
-            ['name' => '25,000 interactions per month', 'included' => true],
-            ['name' => 'Advanced analytics', 'included' => true],
-            ['name' => 'Priority email support', 'included' => true],
-            ['name' => 'File uploads (up to 200MB)', 'included' => true],
-            ['name' => 'Website training', 'included' => true],
-            ['name' => 'API access', 'included' => true],
-            ['name' => 'Custom branding', 'included' => true],
-            ['name' => 'Team collaboration', 'included' => false],
-            ['name' => '24/7 phone support', 'included' => false],
-        ];
-    }
-
-    /**
-     * Get features for the Enterprise plan.
-     *
-     * @return array
-     */
-    private function getEnterpriseFeatures()
-    {
-        return [
-            ['name' => 'Unlimited AI Agents', 'included' => true],
-            ['name' => 'Unlimited interactions', 'included' => true],
-            ['name' => 'Advanced analytics & reporting', 'included' => true],
-            ['name' => '24/7 priority support', 'included' => true],
-            ['name' => 'Unlimited file uploads', 'included' => true],
-            ['name' => 'Website & API training', 'included' => true],
-            ['name' => 'Advanced API access', 'included' => true],
-            ['name' => 'Custom branding & white labeling', 'included' => true],
-            ['name' => 'Team collaboration', 'included' => true],
-            ['name' => 'Dedicated account manager', 'included' => true],
-        ];
-    }
-
-    /**
-     * Get default features for unknown plans.
-     *
-     * @return array
-     */
-    private function getDefaultFeatures()
-    {
-        return [
-            ['name' => 'Basic features', 'included' => true],
-            ['name' => 'Standard support', 'included' => true],
-        ];
-    }
 
     /**
      * Get the next billing date for a subscription.
@@ -322,6 +319,20 @@ class AgentController extends Controller
             }
 
             Log::info('No current_period_end found in Stripe subscription');
+            return null;
+        } catch (\Stripe\Exception\ApiConnectionException $e) {
+            // Handle Stripe connection error with a meaningful message
+            Log::warning('Unable to connect to payment service when retrieving next billing date: ' . $e->getMessage(), [
+                'subscription_id' => $subscription->id,
+                'stripe_id' => $subscription->stripe_id
+            ]);
+
+            // If we haven't already shown a warning, show one now
+            if (!session()->has('warning')) {
+                session()->flash('warning', 'Unable to connect to payment service. Your next billing date is estimated based on your subscription start date.');
+            }
+
+            // Return null to trigger the fallback billing date calculation
             return null;
         } catch (\Exception $e) {
             Log::error('Error getting next billing date: ' . $e->getMessage(), [
@@ -379,6 +390,19 @@ class AgentController extends Controller
 
         // Then check subscription limits based on plan
         $agentLimit = $this->getAgentLimit($user);
+
+        // If agentLimit is null, it means there was a connection error
+        if ($agentLimit === null) {
+            if ($request->wantsJson()) {
+                return response()->json([
+                    'message' => "Unable to connect to payment service. Agent creation is unavailable until connection is restored.",
+                    'connection_error' => true
+                ], 503); // 503 Service Unavailable
+            }
+
+            return redirect()->back()->with('error', "Unable to connect to payment service. Agent creation is unavailable until connection is restored.");
+        }
+
         $currentAgentCount = $user->agents()->count();
 
         if ($currentAgentCount >= $agentLimit) {
@@ -546,6 +570,20 @@ class AgentController extends Controller
             Cache::put($cacheKey, $stripeSubscription->status, now()->addMinutes(5));
 
             return $stripeSubscription->status;
+        } catch (\Stripe\Exception\ApiConnectionException $e) {
+            // Handle Stripe connection error with a meaningful message
+            Log::warning('Unable to connect to payment service when verifying subscription status: ' . $e->getMessage(), [
+                'subscription_id' => $subscription->id,
+                'stripe_id' => $subscription->stripe_id
+            ]);
+
+            // If we haven't already shown a warning, show one now
+            if (!session()->has('warning')) {
+                session()->flash('warning', 'Unable to connect to payment service. Your subscription status will be verified using local data only.');
+            }
+
+            // Return the database status as a fallback
+            return $subscription->stripe_status;
         } catch (\Exception $e) {
             Log::error('Error fetching subscription status from Stripe', [
                 'subscription_id' => $subscription->id,
@@ -586,16 +624,75 @@ class AgentController extends Controller
      * Get the agent limit based on the user's subscription plan.
      *
      * @param  \App\Models\User  $user
-     * @return int
+     * @return int|null
      */
     private function getAgentLimit($user)
     {
         // Default limit for free users or unknown plans
         $defaultLimit = 0;
 
-        // If user is on trial, give them the Professional plan limit
+        // If user is on trial, we need to check the trial plan's limit
         if ($user->onTrial()) {
-            return 5; // Professional plan limit
+            try {
+                // Get the trial subscription
+                $subscription = $user->subscription();
+                if (!$subscription) {
+                    return $defaultLimit;
+                }
+
+                // Get the plan details from Stripe
+                \Stripe\Stripe::setApiKey(config('cashier.secret'));
+                $stripePlan = \Stripe\Price::retrieve([
+                    'id' => $subscription->stripe_price,
+                    'expand' => ['product']
+                ]);
+
+                // Try to get agent limit from product metadata
+                if (isset($stripePlan->product->metadata->features)) {
+                    try {
+                        $features = json_decode($stripePlan->product->metadata->features, true);
+                        if (is_array($features)) {
+                            // Look for an "Agents" feature
+                            foreach ($features as $feature) {
+                                if (isset($feature['name']) && strtolower($feature['name']) === 'agents' &&
+                                    isset($feature['value']) && $feature['included']) {
+
+                                    // Extract the number from the value (e.g., "5 agents" -> 5)
+                                    $value = $feature['value'];
+                                    if (preg_match('/(\d+)/', $value, $matches)) {
+                                        return (int) $matches[1];
+                                    } elseif (stripos($value, 'unlimited') !== false) {
+                                        return PHP_INT_MAX;
+                                    }
+                                }
+                            }
+                        }
+                    } catch (\Exception $e) {
+                        Log::warning('Failed to parse features from product metadata for trial user', [
+                            'product_id' => $stripePlan->product->id,
+                            'error' => $e->getMessage()
+                        ]);
+                    }
+                }
+
+                // If we couldn't get the limit from metadata, return null
+                Log::warning('Could not determine agent limit for trial user');
+                session()->flash('error', 'Unable to determine your trial plan\'s agent limit. Agent creation is unavailable until connection is restored.');
+                return null;
+
+            } catch (\Stripe\Exception\ApiConnectionException $e) {
+                // Handle Stripe connection error
+                Log::warning('Unable to connect to payment service when determining trial user agent limit: ' . $e->getMessage());
+
+                // Add a flash message for the user
+                session()->flash('error', 'Unable to connect to payment service. Agent creation is unavailable until connection is restored.');
+
+                // Return null to indicate a connection error
+                return null;
+            } catch (\Exception $e) {
+                Log::error('Error determining trial user agent limit: ' . $e->getMessage());
+                return $defaultLimit;
+            }
         }
 
         // If user doesn't have an active subscription, return the default limit
@@ -617,22 +714,52 @@ class AgentController extends Controller
                 'expand' => ['product']
             ]);
 
-            // Get the product name
-            $productName = $stripePlan->product->name ?? '';
-            $productNameLower = strtolower($productName);
+            // Try to get agent limit from product metadata
+            if (isset($stripePlan->product->metadata->features)) {
+                try {
+                    $features = json_decode($stripePlan->product->metadata->features, true);
+                    if (is_array($features)) {
+                        // Look for an "Agents" feature
+                        foreach ($features as $feature) {
+                            if (isset($feature['name']) && strtolower($feature['name']) === 'agents' &&
+                                isset($feature['value']) && $feature['included']) {
 
-            // Determine the limit based on the plan name
-            if (strpos($productNameLower, 'starter') !== false) {
-                return 1; // Starter plan: 1 agent
-            } elseif (strpos($productNameLower, 'professional') !== false) {
-                return 5; // Professional plan: 5 agents
-            } elseif (strpos($productNameLower, 'enterprise') !== false) {
-                return PHP_INT_MAX; // Enterprise plan: unlimited agents
+                                // Extract the number from the value (e.g., "5 agents" -> 5)
+                                $value = $feature['value'];
+                                if (preg_match('/(\d+)/', $value, $matches)) {
+                                    return (int) $matches[1];
+                                } elseif (stripos($value, 'unlimited') !== false) {
+                                    return PHP_INT_MAX;
+                                }
+                            }
+                        }
+                    }
+                } catch (\Exception $e) {
+                    Log::warning('Failed to parse features from product metadata when determining agent limit', [
+                        'product_id' => $stripePlan->product->id,
+                        'error' => $e->getMessage()
+                    ]);
+                }
             }
 
-            // Fallback to default limit if plan name doesn't match
-            return $defaultLimit;
+            // If we couldn't get the limit from metadata, we can't determine the limit
+            // Return null to indicate a connection error
+            Log::warning('Could not determine agent limit from Stripe metadata');
 
+            // Add a flash message for the user
+            session()->flash('error', 'Unable to determine your plan\'s agent limit. Agent creation is unavailable until connection is restored.');
+
+            return null;
+
+        } catch (\Stripe\Exception\ApiConnectionException $e) {
+            // Handle Stripe connection error
+            Log::warning('Unable to connect to payment service when determining agent limit: ' . $e->getMessage());
+
+            // Add a flash message for the user
+            session()->flash('error', 'Unable to connect to payment service. Agent creation is unavailable until connection is restored.');
+
+            // Return null to indicate a connection error
+            return null;
         } catch (\Exception $e) {
             Log::error('Error determining agent limit: ' . $e->getMessage());
             return $defaultLimit;
@@ -745,6 +872,8 @@ class AgentController extends Controller
         return redirect()->route('dashboard');
     }
 
+
+
     /**
      * Get the subscription type for a user.
      * This method retrieves the subscription type from the database or returns 'default' as fallback.
@@ -760,4 +889,68 @@ class AgentController extends Controller
         // If a subscription exists, return its type, otherwise return 'default'
         return $subscription ? $subscription->type : 'default';
     }
+
+    /**
+     * Create a fallback subscription object when Stripe API is unavailable.
+     * This uses data from the database to provide basic subscription information.
+     *
+     * @param  \Laravel\Cashier\Subscription  $subscription
+     * @param  \Stripe\PaymentMethod|null  $paymentMethod
+     * @return array
+     */
+    private function createFallbackSubscription($subscription, $paymentMethod = null)
+    {
+        Log::info('Creating fallback subscription object from database data');
+
+        // Get the card details if available
+        $cardBrand = null;
+        $cardLastFour = null;
+
+        if ($paymentMethod) {
+            try {
+                $cardBrand = $paymentMethod->card->brand;
+                $cardLastFour = $paymentMethod->card->last4;
+            } catch (\Exception $e) {
+                Log::warning('Could not get card details from payment method: ' . $e->getMessage());
+            }
+        }
+
+        // Use the database information to determine the subscription details
+        // If we don't have specific information, use generic placeholders
+        $planName = 'Your Subscription';
+        $price = null; // We'll show "Unavailable" in the UI instead of a specific price
+        $interval = $subscription->stripe_status === 'trialing' ? 'trial' : 'month';
+
+        // Try to get a more specific plan name if possible
+        if ($subscription->name) {
+            $planName = $subscription->name;
+        }
+
+        // Empty features array - we don't want to use hardcoded values
+        $features = [];
+
+        // Create a fallback subscription array with data from the database
+        return [
+            'name' => $planName,
+            'stripe_status' => $subscription->stripe_status,
+            'ends_at' => $subscription->ends_at ? $subscription->ends_at->toIso8601String() : null,
+            'trial_ends_at' => $subscription->trial_ends_at ? $subscription->trial_ends_at->toIso8601String() : null,
+            'stripe_price' => $subscription->stripe_price,
+            'price' => $price,
+            'interval' => $interval,
+            'currency' => 'usd',
+            'quantity' => $subscription->quantity,
+            'card_brand' => $cardBrand,
+            'card_last_four' => $cardLastFour,
+            'next_billing_date' => $this->getFallbackBillingDate($subscription),
+            'features' => $features,
+            'offline_mode' => true, // Flag to indicate this is offline data
+            'connection_error' => true, // Flag to indicate there was a connection error
+            'connection_error_message' => 'Unable to connect to payment service. Some subscription details may be limited until connection is restored.'
+        ];
+    }
+
+
+
+
 }

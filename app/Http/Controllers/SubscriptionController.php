@@ -8,8 +8,10 @@ use Illuminate\Support\Facades\Auth;
 use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Carbon;
 use Inertia\Inertia;
+use Laravel\Cashier\Billable;
 use Laravel\Cashier\Exceptions\IncompletePayment;
 use Laravel\Cashier\Subscription;
+use Stripe\Exception\ApiConnectionException;
 use Stripe\Exception\CardException;
 use Stripe\Stripe;
 
@@ -38,11 +40,44 @@ class SubscriptionController extends Controller
 
         if ($user->subscribed($subscriptionType)) {
             $subscription = $user->subscription($subscriptionType);
-            $invoices = $user->invoices();
+
+            // Get all types of invoices
+            $paidInvoices = $user->invoices();
+            $pendingInvoices = $user->invoicesIncludingPending(true);
+
+            // Filter out paid invoices from pending to get only pending ones
+            $pendingInvoiceIds = $paidInvoices->pluck('id')->toArray();
+            $onlyPendingInvoices = $pendingInvoices->reject(function ($invoice) use ($pendingInvoiceIds) {
+                return in_array($invoice->id, $pendingInvoiceIds);
+            });
+
+            // Get upcoming invoice if available
+            $upcomingInvoice = null;
+            try {
+                $upcomingInvoice = $user->upcomingInvoice();
+            } catch (\Exception $e) {
+                // No upcoming invoice or error occurred
+                Log::info('No upcoming invoice available: ' . $e->getMessage());
+            }
+
+            // Combine all invoices for backward compatibility
+            $invoices = $paidInvoices;
+
+            // Store each type separately for the grouped view
+            $groupedInvoices = [
+                'paid' => $paidInvoices,
+                'pending' => $onlyPendingInvoices,
+                'upcoming' => $upcomingInvoice ? [$upcomingInvoice] : []
+            ];
         }
 
         // Format subscription data for the frontend
-        $formattedSubscription = $this->formatSubscription($subscription, $paymentMethod, $invoices);
+        $formattedSubscription = $this->formatSubscription(
+            $subscription,
+            $paymentMethod,
+            $invoices,
+            isset($groupedInvoices) ? $groupedInvoices : null
+        );
 
         // Get available plans
         $plans = $this->getAvailablePlans();
@@ -539,27 +574,29 @@ class SubscriptionController extends Controller
      * @param  \Laravel\Cashier\Subscription|null  $subscription
      * @param  \Stripe\PaymentMethod|null  $paymentMethod
      * @param  array  $invoices
-     * @return array
+     * @param  array|null  $groupedInvoices
+     * @return array|null
      */
-    public function formatSubscription($subscription, $paymentMethod, $invoices)
+    public function formatSubscription($subscription, $paymentMethod, $invoices = [], $groupedInvoices = null)
     {
         if (!$subscription) {
             return null;
         }
 
-        // Get plan details from Stripe
-        Stripe::setApiKey(config('cashier.secret'));
-        $stripePlan = \Stripe\Price::retrieve($subscription->stripe_price);
-        $product = \Stripe\Product::retrieve($stripePlan->product);
+        try {
+            // Get plan details from Stripe
+            Stripe::setApiKey(config('cashier.secret'));
+            $stripePlan = \Stripe\Price::retrieve($subscription->stripe_price);
+            $product = \Stripe\Product::retrieve($stripePlan->product);
 
-        // Format invoices
-        $formattedInvoices = [];
-        foreach ($invoices as $invoice) {
-            // Format the date with month name
-            $date = $invoice->date()->format('F j, Y');
+            // Format invoices
+            $formattedInvoices = [];
+            foreach ($invoices as $invoice) {
+                // Format the date with month name
+                $date = $invoice->date()->format('F j, Y');
 
-            // Format the amount with currency symbol
-            try {
+                // Format the amount with currency symbol
+                try {
                 // Log the raw invoice total for debugging
                 $rawTotal = $invoice->total();
                 Log::info('Raw invoice total', [
@@ -601,6 +638,31 @@ class SubscriptionController extends Controller
             ];
         }
 
+        // Format grouped invoices if available
+        $formattedGroupedInvoices = null;
+        if ($groupedInvoices) {
+            $formattedGroupedInvoices = [
+                'paid' => [],
+                'pending' => [],
+                'upcoming' => []
+            ];
+
+            // Format paid invoices
+            foreach ($groupedInvoices['paid'] as $invoice) {
+                $formattedGroupedInvoices['paid'][] = $this->formatSingleInvoice($invoice);
+            }
+
+            // Format pending invoices
+            foreach ($groupedInvoices['pending'] as $invoice) {
+                $formattedGroupedInvoices['pending'][] = $this->formatSingleInvoice($invoice);
+            }
+
+            // Format upcoming invoice
+            foreach ($groupedInvoices['upcoming'] as $invoice) {
+                $formattedGroupedInvoices['upcoming'][] = $this->formatSingleInvoice($invoice);
+            }
+        }
+
         // Get features based on the plan
         $features = $this->getPlanFeatures($stripePlan->id);
 
@@ -610,30 +672,84 @@ class SubscriptionController extends Controller
         // Check if the subscription is on grace period
         $onGracePeriod = $subscription->onGracePeriod();
 
-        return [
-            'name' => $product->name,
-            'stripe_status' => $subscription->stripe_status,
-            'ends_at' => $subscription->ends_at ? $subscription->ends_at->toIso8601String() : null,
-            'trial_ends_at' => $subscription->trial_ends_at ? $subscription->trial_ends_at->toIso8601String() : null,
-            'stripe_price' => $subscription->stripe_price,
-            'price' => $stripePlan->unit_amount / 100,
-            'interval' => $stripePlan->recurring->interval,
-            'currency' => $stripePlan->currency,
-            'quantity' => $subscription->quantity,
-            'card_brand' => $paymentMethod ? $paymentMethod->card->brand : null,
-            'card_last_four' => $paymentMethod ? $paymentMethod->card->last4 : null,
-            'next_billing_date' => $this->getNextBillingDate($subscription) ?? $this->getFallbackBillingDate($subscription),
-            'invoices' => $formattedInvoices,
-            'features' => $features,
-            'on_grace_period' => $onGracePeriod,
-            'trial_days' => $trialDays,
-        ];
+            return [
+                'name' => $product->name,
+                'stripe_status' => $subscription->stripe_status,
+                'ends_at' => $subscription->ends_at ? $subscription->ends_at->toIso8601String() : null,
+                'trial_ends_at' => $subscription->trial_ends_at ? $subscription->trial_ends_at->toIso8601String() : null,
+                'stripe_price' => $subscription->stripe_price,
+                'price' => $stripePlan->unit_amount / 100,
+                'interval' => $stripePlan->recurring->interval,
+                'currency' => $stripePlan->currency,
+                'quantity' => $subscription->quantity,
+                'card_brand' => $paymentMethod ? $paymentMethod->card->brand : null,
+                'card_last_four' => $paymentMethod ? $paymentMethod->card->last4 : null,
+                'next_billing_date' => $this->getNextBillingDate($subscription) ?? $this->getFallbackBillingDate($subscription),
+                'invoices' => $formattedInvoices,
+                'grouped_invoices' => $formattedGroupedInvoices,
+                'features' => $features,
+                'on_grace_period' => $onGracePeriod,
+                'trial_days' => $trialDays,
+            ];
+        } catch (\Stripe\Exception\ApiConnectionException $e) {
+            // Handle Stripe connection error with a meaningful message
+            Log::warning('Unable to connect to payment service when formatting subscription: ' . $e->getMessage());
+
+            // Create a basic subscription object with data from the database
+            return [
+                'name' => 'Your Subscription',
+                'stripe_status' => $subscription->stripe_status,
+                'ends_at' => $subscription->ends_at ? $subscription->ends_at->toIso8601String() : null,
+                'trial_ends_at' => $subscription->trial_ends_at ? $subscription->trial_ends_at->toIso8601String() : null,
+                'stripe_price' => $subscription->stripe_price,
+                'price' => null, // We don't know the price without Stripe
+                'interval' => 'month', // Default to monthly
+                'currency' => 'usd', // Default to USD
+                'quantity' => $subscription->quantity,
+                'card_brand' => $paymentMethod ? $paymentMethod->card->brand : null,
+                'card_last_four' => $paymentMethod ? $paymentMethod->card->last4 : null,
+                'next_billing_date' => $this->getFallbackBillingDate($subscription),
+                'invoices' => $formattedInvoices,
+                'grouped_invoices' => $formattedGroupedInvoices,
+                'features' => $this->getDefaultFeatures(),
+                'on_grace_period' => $subscription->onGracePeriod(),
+                'trial_days' => 0,
+                'connection_error' => true,
+                'connection_error_message' => 'Unable to connect to payment service. Some subscription details may be limited until connection is restored.'
+            ];
+        } catch (\Exception $e) {
+            // Handle other exceptions
+            Log::error('Error formatting subscription: ' . $e->getMessage());
+
+            // Return a basic subscription object
+            return [
+                'name' => 'Your Subscription',
+                'stripe_status' => $subscription->stripe_status,
+                'ends_at' => $subscription->ends_at ? $subscription->ends_at->toIso8601String() : null,
+                'trial_ends_at' => $subscription->trial_ends_at ? $subscription->trial_ends_at->toIso8601String() : null,
+                'stripe_price' => $subscription->stripe_price,
+                'price' => null,
+                'interval' => 'month',
+                'currency' => 'usd',
+                'quantity' => $subscription->quantity,
+                'card_brand' => null,
+                'card_last_four' => null,
+                'next_billing_date' => $this->getFallbackBillingDate($subscription),
+                'invoices' => [],
+                'grouped_invoices' => null,
+                'features' => $this->getDefaultFeatures(),
+                'on_grace_period' => false,
+                'trial_days' => 0,
+                'error' => true,
+                'error_message' => 'An error occurred while retrieving subscription details.'
+            ];
+        }
     }
 
     /**
      * Get available subscription plans.
      *
-     * @return array
+     * @return array|null
      */
     public function getAvailablePlans()
     {
@@ -652,13 +768,22 @@ class SubscriptionController extends Controller
                         $trialDays = (int) $price->product->metadata->trial_days;
                     }
 
+                    // Get features for this plan
+                    try {
+                        $features = $this->getPlanFeatures($price->id);
+                    } catch (\Stripe\Exception\ApiConnectionException $e) {
+                        // If there's a connection error, use default features
+                        Log::warning('Unable to connect to payment service when fetching plan features: ' . $e->getMessage());
+                        $features = $this->getDefaultFeatures();
+                    }
+
                     $plans[] = [
                         'id' => $price->id,
                         'name' => $price->product->name,
                         'price' => $price->unit_amount / 100,
                         'interval' => $price->recurring->interval,
                         'currency' => $price->currency,
-                        'features' => $this->getPlanFeatures($price->id),
+                        'features' => $features,
                         'trial_days' => $trialDays,
                     ];
                 }
@@ -668,20 +793,32 @@ class SubscriptionController extends Controller
             if (count($plans) > 0) {
                 return $plans;
             }
+
+            // If no plans were found, return an empty array
+            return [];
+        } catch (\Stripe\Exception\ApiConnectionException $e) {
+            // Handle Stripe connection error specifically
+            Log::warning('Unable to connect to payment service when fetching plans: ' . $e->getMessage());
+
+            // Return null to indicate a connection error
+            return null;
         } catch (\Exception $e) {
             Log::error('Error fetching Stripe plans: ' . $e->getMessage());
-        }
 
-        // Return empty array instead of hardcoded plans
-        Log::warning('No plans found from Stripe API, returning empty array');
-        return [];
+            // Return empty array for other errors
+            Log::warning('No plans found from Stripe API, returning empty array');
+            return [];
+        }
     }
+
+
 
     /**
      * Get features for a specific plan.
      *
      * @param  string  $planId
      * @return array
+     * @throws \Stripe\Exception\ApiConnectionException
      */
     private function getPlanFeatures($planId)
     {
@@ -714,6 +851,10 @@ class SubscriptionController extends Controller
             // If no features found in metadata, return default features
             return $this->getDefaultFeatures();
 
+        } catch (\Stripe\Exception\ApiConnectionException $e) {
+            // Let the caller handle this specific exception
+            Log::warning('Unable to connect to payment service when fetching plan features: ' . $e->getMessage());
+            throw $e;
         } catch (\Exception $e) {
             Log::error('Error fetching plan features: ' . $e->getMessage());
 
@@ -728,16 +869,13 @@ class SubscriptionController extends Controller
 
 
     /**
-     * Get default features for unknown plans.
+     * Get empty features array when Stripe API is unavailable.
      *
      * @return array
      */
     private function getDefaultFeatures()
     {
-        return [
-            ['name' => 'Basic features', 'included' => true],
-            ['name' => 'Standard support', 'included' => true],
-        ];
+        return [];
     }
 
     /**
@@ -789,26 +927,34 @@ class SubscriptionController extends Controller
                 return null;
             }
 
-            // Get the current period end date from Stripe
-            \Stripe\Stripe::setApiKey(config('cashier.secret'));
-            $stripeSubscription = \Stripe\Subscription::retrieve($subscription->stripe_id);
+            try {
+                // Get the current period end date from Stripe
+                \Stripe\Stripe::setApiKey(config('cashier.secret'));
+                $stripeSubscription = \Stripe\Subscription::retrieve($subscription->stripe_id);
 
-            // Log the Stripe subscription data for debugging
-            Log::info('Stripe subscription data for next billing date', [
-                'stripe_id' => $subscription->stripe_id,
-                'current_period_end' => $stripeSubscription->current_period_end ?? 'not set',
-                'status' => $stripeSubscription->status ?? 'unknown'
-            ]);
+                // Log the Stripe subscription data for debugging
+                Log::info('Stripe subscription data for next billing date', [
+                    'stripe_id' => $subscription->stripe_id,
+                    'current_period_end' => $stripeSubscription->current_period_end ?? 'not set',
+                    'status' => $stripeSubscription->status ?? 'unknown'
+                ]);
 
-            // Convert the timestamp to a Carbon instance and format it
-            if (isset($stripeSubscription->current_period_end)) {
-                $date = Carbon::createFromTimestamp($stripeSubscription->current_period_end)->toIso8601String();
-                Log::info('Next billing date calculated', ['date' => $date]);
-                return $date;
+                // Convert the timestamp to a Carbon instance and format it
+                if (isset($stripeSubscription->current_period_end)) {
+                    $date = Carbon::createFromTimestamp($stripeSubscription->current_period_end)->toIso8601String();
+                    Log::info('Next billing date calculated', ['date' => $date]);
+                    return $date;
+                }
+
+                Log::info('No current_period_end found in Stripe subscription');
+                return null;
+            } catch (\Stripe\Exception\ApiConnectionException $e) {
+                // Handle Stripe connection error specifically
+                Log::warning('Unable to connect to payment service when getting next billing date: ' . $e->getMessage());
+
+                // Return null to indicate a connection error
+                return null;
             }
-
-            Log::info('No current_period_end found in Stripe subscription');
-            return null;
         } catch (\Exception $e) {
             Log::error('Error getting next billing date: ' . $e->getMessage(), [
                 'exception' => get_class($e),
@@ -842,6 +988,60 @@ class SubscriptionController extends Controller
 
         Log::info('Fallback billing date calculated', ['date' => $nextBillingDate]);
         return $nextBillingDate;
+    }
+
+    /**
+     * Format a single invoice for display.
+     *
+     * @param  \Laravel\Cashier\Invoice  $invoice
+     * @return array
+     */
+    private function formatSingleInvoice($invoice)
+    {
+        // Format the date with month name
+        $date = $invoice->date()->format('F j, Y');
+
+        // Format the amount with currency symbol
+        try {
+            // Log the raw invoice total for debugging
+            $rawTotal = $invoice->total();
+            Log::info('Raw invoice total', [
+                'invoice_id' => $invoice->id,
+                'raw_total' => $rawTotal,
+                'type' => gettype($rawTotal)
+            ]);
+
+            // If the amount already includes a currency symbol (e.g., '$20')
+            if (is_string($rawTotal) && strpos($rawTotal, '$') === 0) {
+                // Remove the currency symbol and any commas
+                $cleanAmount = str_replace(['$', ','], '', $rawTotal);
+                // Convert to float and then to integer cents
+                $amount = (int)round(floatval($cleanAmount) * 100);
+                // Use the original string as the formatted amount
+                $formattedAmount = $rawTotal;
+            } else {
+                // Handle as before - convert to integer and format
+                $amount = (int)$rawTotal;
+                $formattedAmount = '$' . number_format($amount / 100, 2);
+            }
+        } catch (\Exception $e) {
+            // If there's an error formatting the amount, use a fallback
+            Log::error('Error formatting invoice amount', [
+                'invoice_id' => $invoice->id,
+                'error' => $e->getMessage()
+            ]);
+            $amount = 0;
+            $formattedAmount = '$0.00';
+        }
+
+        return [
+            'id' => $invoice->id,
+            'date' => $date,
+            'total' => $amount,
+            'formatted_amount' => $formattedAmount,
+            'status' => $invoice->status,
+            'invoice_pdf' => $invoice->invoice_pdf,
+        ];
     }
 
     /**

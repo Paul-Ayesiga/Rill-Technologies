@@ -36,6 +36,11 @@ class SubscriptionsController extends Controller
 
                         if (isset($price->product->name)) {
                             $planName = $price->product->name;
+
+                            // Check if the product is archived (not active)
+                            if (isset($price->product->active) && $price->product->active === false) {
+                                $planName .= ' (Archived)';
+                            }
                         }
                     } catch (\Exception $e) {
                         Log::warning('Could not fetch plan name from Stripe: ' . $e->getMessage(), [
@@ -282,6 +287,8 @@ class SubscriptionsController extends Controller
         }
     }
 
+
+
     /**
      * Sync subscription with Stripe.
      */
@@ -328,6 +335,8 @@ class SubscriptionsController extends Controller
         }
     }
 
+
+
     /**
      * Get available subscription plans from Stripe.
      */
@@ -335,10 +344,14 @@ class SubscriptionsController extends Controller
     {
         try {
             \Stripe\Stripe::setApiKey(config('cashier.secret'));
-            $prices = \Stripe\Price::all(['active' => true, 'limit' => 10, 'expand' => ['data.product']]);
+
+            // Get active prices
+            $activePrices = \Stripe\Price::all(['active' => true, 'limit' => 100, 'expand' => ['data.product']]);
 
             $plans = [];
-            foreach ($prices->data as $price) {
+
+            // Process active prices
+            foreach ($activePrices->data as $price) {
                 if ($price->type === 'recurring') {
                     $plans[] = [
                         'id' => $price->id,
@@ -346,7 +359,36 @@ class SubscriptionsController extends Controller
                         'price' => $price->unit_amount / 100,
                         'interval' => $price->recurring->interval,
                         'currency' => $price->currency,
+                        'active' => true,
+                        'archived' => false,
+                        'product_id' => $price->product->id,
                     ];
+                }
+            }
+
+            // Get archived products (products that are not active)
+            $archivedProducts = \Stripe\Product::all(['active' => false, 'limit' => 100]);
+
+            // For each archived product, get its prices
+            foreach ($archivedProducts->data as $product) {
+                $productPrices = \Stripe\Price::all([
+                    'product' => $product->id,
+                    'limit' => 10,
+                ]);
+
+                foreach ($productPrices->data as $price) {
+                    if ($price->type === 'recurring') {
+                        $plans[] = [
+                            'id' => $price->id,
+                            'name' => $product->name . ' (Archived)',
+                            'price' => $price->unit_amount / 100,
+                            'interval' => $price->recurring->interval,
+                            'currency' => $price->currency,
+                            'active' => false,
+                            'archived' => true,
+                            'product_id' => $product->id,
+                        ];
+                    }
                 }
             }
 

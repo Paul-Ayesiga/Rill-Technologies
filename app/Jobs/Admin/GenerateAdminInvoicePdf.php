@@ -1,9 +1,9 @@
 <?php
 
-namespace App\Jobs;
+namespace App\Jobs\Admin;
 
 use App\Models\User;
-use App\Notifications\InvoiceReady;
+use App\Notifications\Admin\AdminInvoiceReady;
 use Illuminate\Bus\Queueable;
 use Illuminate\Bus\Batchable;
 use Illuminate\Contracts\Queue\ShouldQueue;
@@ -13,10 +13,11 @@ use Illuminate\Queue\SerializesModels;
 use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\Storage;
 
-class GenerateInvoicePdf implements ShouldQueue
+class GenerateAdminInvoicePdf implements ShouldQueue
 {
     use Batchable, Dispatchable, InteractsWithQueue, Queueable, SerializesModels;
 
+    protected $admin;
     protected $user;
     protected $invoiceId;
     protected $options;
@@ -24,8 +25,9 @@ class GenerateInvoicePdf implements ShouldQueue
     /**
      * Create a new job instance.
      */
-    public function __construct(User $user, string $invoiceId, array $options = [])
+    public function __construct(User $admin, User $user, string $invoiceId, array $options = [])
     {
+        $this->admin = $admin;
         $this->user = $user;
         $this->invoiceId = $invoiceId;
         $this->options = $options;
@@ -51,11 +53,11 @@ class GenerateInvoicePdf implements ShouldQueue
                 ];
             }
 
-            // Generate the invoice PDF
+            // Generate the invoice PDF using the user's account
             $invoicePdf = $this->user->downloadInvoice($this->invoiceId, $this->options);
 
             // Create a unique filename
-            $filename = 'invoice_' . $this->invoiceId . '_' . time();
+            $filename = 'admin_invoice_' . $this->user->id . '_' . $this->invoiceId . '_' . time();
 
             // Add batch ID to filename if this is part of a batch
             if ($this->batch()) {
@@ -65,16 +67,17 @@ class GenerateInvoicePdf implements ShouldQueue
             // Add file extension
             $filename .= '.pdf';
 
-            // Store the PDF in a private storage location
-            Storage::disk('private')->put('invoices/' . $this->user->id . '/' . $filename, $invoicePdf);
+            // Store the PDF in a private storage location for the admin
+            Storage::disk('private')->put('admin_invoices/' . $this->admin->id . '/' . $filename, $invoicePdf);
 
             // Get the storage path for the invoice
-            $invoicePath = 'invoices/' . $this->user->id . '/' . $filename;
+            $invoicePath = 'admin_invoices/' . $this->admin->id . '/' . $filename;
 
             // Check if this job is part of a batch
             if ($this->batch()) {
                 // If it's part of a batch, we'll let the batch handler send notifications
-                Log::info('Invoice PDF generated successfully (batch job)', [
+                Log::info('Admin invoice PDF generated successfully (batch job)', [
+                    'admin_id' => $this->admin->id,
                     'user_id' => $this->user->id,
                     'invoice_id' => $this->invoiceId,
                     'path' => $invoicePath,
@@ -82,17 +85,19 @@ class GenerateInvoicePdf implements ShouldQueue
                 ]);
             } else {
                 // If it's not part of a batch, send individual notification
-                $notification = new InvoiceReady($invoicePath, $this->invoiceId);
-                $this->user->notify($notification);
+                $notification = new AdminInvoiceReady($invoicePath, $this->invoiceId, $this->user->id, $this->user->name);
+                $this->admin->notify($notification);
 
-                Log::info('Invoice PDF generated successfully', [
+                Log::info('Admin invoice PDF generated successfully', [
+                    'admin_id' => $this->admin->id,
                     'user_id' => $this->user->id,
                     'invoice_id' => $this->invoiceId,
                     'path' => $invoicePath
                 ]);
             }
         } catch (\Exception $e) {
-            Log::error('Failed to generate invoice PDF', [
+            Log::error('Failed to generate admin invoice PDF', [
+                'admin_id' => $this->admin->id,
                 'user_id' => $this->user->id,
                 'invoice_id' => $this->invoiceId,
                 'error' => $e->getMessage(),
@@ -102,7 +107,7 @@ class GenerateInvoicePdf implements ShouldQueue
             // Check if this job is part of a batch
             if (!$this->batch()) {
                 // Only notify for individual jobs, not batch jobs
-                $this->user->notify(new InvoiceReady(null, $this->invoiceId, false));
+                $this->admin->notify(new AdminInvoiceReady(null, $this->invoiceId, $this->user->id, $this->user->name, false));
             }
 
             // If this is part of a batch, we need to fail the job

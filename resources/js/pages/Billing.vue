@@ -21,14 +21,19 @@ import {
   Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader,
   DialogTitle, DialogTrigger
 } from '@/components/ui/dialog';
+import {
+  DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuSeparator,
+  DropdownMenuTrigger
+} from '@/components/ui/dropdown-menu';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { Badge } from '@/components/ui/badge';
 import { Skeleton } from '@/components/ui/skeleton';
+import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 
 // Import Lucide icons
 import {
-  CreditCard, Check, X, AlertCircle, Shield, FileDown, RefreshCw, Zap, Ban
+  CreditCard, Check, X, CircleAlert, Shield, FileDown, RefreshCcw, Zap, Ban, ChevronDown
 } from 'lucide-vue-next';
 import CardBrandIcon from '@/components/CardBrandIcon.vue';
 
@@ -39,7 +44,9 @@ const components = {
   Card, CardContent, CardDescription, CardFooter, CardHeader, CardTitle,
   Button, Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader,
   DialogTitle, DialogTrigger, Input, Label, Badge, Skeleton,
-  CreditCard, Check, X, AlertCircle, Shield, FileDown, RefreshCw, Zap, Ban,
+  DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuSeparator, DropdownMenuTrigger,
+  Tabs, TabsContent, TabsList, TabsTrigger,
+  CreditCard, Check, X, AlertCircle, Shield, FileDown, RefreshCw, Zap, Ban, ChevronDown,
   CardBrandIcon
 };
 
@@ -55,10 +62,38 @@ const isLoading = ref(true);
 const isSyncing = ref(false);
 const isGeneratingInvoice = ref<Record<string, boolean>>({});
 
+// State for invoice selection
+const selectedInvoices = ref<string[]>([]);
+const selectAllInvoices = ref(false);
+const selectAllPaidInvoices = ref(false);
+const selectAllPendingInvoices = ref(false);
+const isBulkGenerating = ref(false);
+
+// State for batch progress tracking (kept for future use but not displayed)
+const batchProgress = ref<{
+  batchId: string | null;
+  totalInvoices: number;
+  processedInvoices: number;
+  progress: number;
+  isComplete: boolean;
+}>({
+  batchId: null,
+  totalInvoices: 0,
+  processedInvoices: 0,
+  progress: 0,
+  isComplete: false
+});
+
 // Get subscription data from props
 const props = defineProps<{
   subscription?: any;
   plans?: any[];
+  connectionError?: boolean;
+  flash?: {
+    success?: string;
+    error?: string;
+    warning?: string;
+  };
 }>();
 
 // Use the subscription directly from props
@@ -108,99 +143,100 @@ const cardErrors = ref<string>('');
 const stripeLoading = ref(true);
 const cardComplete = ref(false);
 
-// Load Stripe.js and initialize Elements
-const initializeStripe = () => {
+// Initialize Stripe Elements using our utility functions
+const initializeStripeElements = () => {
   try {
     // Only initialize if the dialog is open
     if (!showChangePlanDialog.value) return;
-
-    // Check if we're in a browser environment
-    if (typeof window === 'undefined') {
-      console.error('Window is not defined, cannot initialize Stripe');
-      return;
-    }
 
     // Check if Stripe is already loaded
     if (window.Stripe) {
       stripeLoading.value = false;
 
-      try {
-        // Initialize Stripe with your publishable key from environment variables
-        const stripeKey = import.meta.env.VITE_STRIPE_KEY;
-        // console.log('Using Stripe key:', stripeKey);
-        stripe.value = window.Stripe(stripeKey);
+      // Initialize Stripe with your publishable key from environment variables
+      const stripeKey = import.meta.env.VITE_STRIPE_KEY;
 
-        // Wait for the DOM to be updated
-        setTimeout(() => {
-          try {
-            const elements = stripe.value.elements();
+      // Use our utility function to initialize Stripe
+      initializeStripe(stripeKey, (errorMessage) => {
+        cardErrors.value = errorMessage;
+      })
+        .then((stripeInstance) => {
+          stripe.value = stripeInstance;
 
-            // Create the card element
-            cardElement.value = elements.create('card', {
-              style: {
-                base: {
-                  color: '#32325d',
-                  fontFamily: '"Helvetica Neue", Helvetica, sans-serif',
-                  fontSmoothing: 'antialiased',
-                  fontSize: '16px',
-                  '::placeholder': {
-                    color: '#aab7c4'
+          // Wait for the DOM to be updated
+          setTimeout(() => {
+            try {
+              // Create Stripe Elements
+              const elements = stripe.value.elements();
+
+              // Create the card element
+              cardElement.value = elements.create('card', {
+                style: {
+                  base: {
+                    color: '#32325d',
+                    fontFamily: '"Helvetica Neue", Helvetica, sans-serif',
+                    fontSmoothing: 'antialiased',
+                    fontSize: '16px',
+                    '::placeholder': {
+                      color: '#aab7c4'
+                    }
+                  },
+                  invalid: {
+                    color: '#fa755a',
+                    iconColor: '#fa755a'
                   }
-                },
-                invalid: {
-                  color: '#fa755a',
-                  iconColor: '#fa755a'
                 }
-              }
-            });
-
-            // Mount the card element to the DOM
-            const cardElementContainer = document.getElementById('card-element');
-            if (cardElementContainer) {
-              cardElement.value.mount('#card-element');
-
-              // Listen for changes in the card element
-              cardElement.value.on('change', (event: any) => {
-                cardComplete.value = event.complete;
-                cardErrors.value = event.error ? event.error.message : '';
               });
-            } else {
-              console.warn('Card element container not found');
+
+              // Mount the card element to the DOM
+              const cardElementContainer = document.getElementById('card-element');
+              if (cardElementContainer) {
+                try {
+                  cardElement.value.mount('#card-element');
+
+                  // Listen for changes in the card element
+                  cardElement.value.on('change', (event: any) => {
+                    cardComplete.value = event.complete;
+                    cardErrors.value = event.error ? event.error.message : '';
+                  });
+                } catch (mountError) {
+                  console.error('Error mounting card element:', mountError);
+                  cardErrors.value = 'Unable to display payment form. Please try again later.';
+                }
+              } else {
+                console.warn('Card element container not found');
+                cardErrors.value = 'Payment form could not be displayed. Please try again.';
+              }
+            } catch (error) {
+              console.error('Error initializing Stripe elements:', error);
+              cardErrors.value = 'Error initializing payment form. Please check your internet connection and try again.';
             }
-          } catch (error) {
-            console.error('Error initializing Stripe elements:', error);
-            cardErrors.value = 'Error initializing payment form. Please try again.';
-          }
-        }, 100);
-      } catch (error) {
-        console.error('Error initializing Stripe:', error);
-        cardErrors.value = 'Error initializing payment system. Please try again.';
-      }
+          }, 100);
+        })
+        .catch((error) => {
+          console.error('Error initializing Stripe:', error);
+          cardErrors.value = 'Error initializing payment system. Please check your internet connection and try again.';
+        });
     } else {
       // If Stripe.js is not loaded yet, try again in 100ms
-      setTimeout(initializeStripe, 100);
+      setTimeout(initializeStripeElements, 100);
     }
   } catch (error) {
     console.error('Unexpected error in initializeStripe:', error);
-    cardErrors.value = 'An unexpected error occurred. Please try again.';
+    cardErrors.value = 'An unexpected error occurred. Please check your internet connection and try again.';
   }
 };
 
-// Load Stripe.js script
-const loadStripeScript = () => {
-  try {
-    // Check if we're in a browser environment
-    if (typeof document !== 'undefined') {
-      const script = document.createElement('script');
-      script.src = 'https://js.stripe.com/v3/';
-      script.async = true;
-      document.head.appendChild(script);
-    } else {
-      console.error('Document is not defined, cannot load Stripe script');
-    }
-  } catch (error) {
-    console.error('Error loading Stripe script:', error);
-  }
+// Import Stripe connectivity utilities
+import { loadStripeScript, initializeStripe, showStripeConnectivityError, isConnectivityError, getStripeErrorMessage, isOnline } from '@/utils/stripe-connectivity';
+
+// Load Stripe.js script with error handling
+const loadStripeScriptWithErrorHandling = () => {
+  loadStripeScript((errorMessage) => {
+    cardErrors.value = errorMessage;
+  }).catch((error) => {
+    console.error('Failed to load Stripe script:', error);
+  });
 };
 
 // Watch for dialog open/close to initialize/cleanup Stripe
@@ -209,10 +245,10 @@ watch(() => showChangePlanDialog.value, (isOpen: boolean) => {
     if (isOpen) {
       // Load Stripe.js if not already loaded
       if (typeof window !== 'undefined' && !window.Stripe) {
-        loadStripeScript();
+        loadStripeScriptWithErrorHandling();
       }
       // Initialize Stripe Elements
-      initializeStripe();
+      initializeStripeElements();
 
       // If no plan is selected, show the plan selection UI
       if (!selectedPlan.value) {
@@ -245,7 +281,7 @@ watch(() => showUpdatePaymentDialog.value, (isOpen: boolean) => {
     if (isOpen) {
       // Load Stripe.js if not already loaded
       if (typeof window !== 'undefined' && !window.Stripe) {
-        loadStripeScript();
+        loadStripeScriptWithErrorHandling();
       }
 
       // Wait for Stripe to be loaded
@@ -253,57 +289,64 @@ watch(() => showUpdatePaymentDialog.value, (isOpen: boolean) => {
         if (window.Stripe) {
           stripeLoading.value = false;
 
-          try {
-            // Initialize Stripe with your publishable key
-            const stripeKey = import.meta.env.VITE_STRIPE_KEY ;
-            stripe.value = window.Stripe(stripeKey);
+          // Initialize Stripe with your publishable key
+          const stripeKey = import.meta.env.VITE_STRIPE_KEY;
 
-            // Wait for the DOM to be updated
-            setTimeout(() => {
-              try {
-                const elements = stripe.value.elements();
+          // Use our utility function to initialize Stripe
+          initializeStripe(stripeKey, (errorMessage) => {
+            cardErrors.value = errorMessage;
+          })
+            .then((stripeInstance) => {
+              stripe.value = stripeInstance;
 
-                // Create the card element
-                cardElement.value = elements.create('card', {
-                  style: {
-                    base: {
-                      color: '#32325d',
-                      fontFamily: '"Helvetica Neue", Helvetica, sans-serif',
-                      fontSmoothing: 'antialiased',
-                      fontSize: '16px',
-                      '::placeholder': {
-                        color: '#aab7c4'
+              // Wait for the DOM to be updated
+              setTimeout(() => {
+                try {
+                  const elements = stripe.value.elements();
+
+                  // Create the card element
+                  cardElement.value = elements.create('card', {
+                    style: {
+                      base: {
+                        color: '#32325d',
+                        fontFamily: '"Helvetica Neue", Helvetica, sans-serif',
+                        fontSmoothing: 'antialiased',
+                        fontSize: '16px',
+                        '::placeholder': {
+                          color: '#aab7c4'
+                        }
+                      },
+                      invalid: {
+                        color: '#fa755a',
+                        iconColor: '#fa755a'
                       }
-                    },
-                    invalid: {
-                      color: '#fa755a',
-                      iconColor: '#fa755a'
                     }
-                  }
-                });
-
-                // Mount the card element to the DOM
-                const updateCardElementContainer = document.getElementById('update-card-element');
-                if (updateCardElementContainer) {
-                  cardElement.value.mount('#update-card-element');
-
-                  // Listen for changes in the card element
-                  cardElement.value.on('change', (event: any) => {
-                    cardComplete.value = event.complete;
-                    cardErrors.value = event.error ? event.error.message : '';
                   });
-                } else {
-                  console.warn('Update card element container not found');
+
+                  // Mount the card element to the DOM
+                  const updateCardElementContainer = document.getElementById('update-card-element');
+                  if (updateCardElementContainer) {
+                    cardElement.value.mount('#update-card-element');
+
+                    // Listen for changes in the card element
+                    cardElement.value.on('change', (event: any) => {
+                      cardComplete.value = event.complete;
+                      cardErrors.value = event.error ? event.error.message : '';
+                    });
+                  } else {
+                    console.warn('Update card element container not found');
+                    cardErrors.value = 'Payment form could not be displayed. Please try again.';
+                  }
+                } catch (error) {
+                  console.error('Error initializing Stripe elements for update payment:', error);
+                  cardErrors.value = 'Error initializing payment form. Please check your internet connection and try again.';
                 }
-              } catch (error) {
-                console.error('Error initializing Stripe elements for update payment:', error);
-                cardErrors.value = 'Error initializing payment form. Please try again.';
-              }
-            }, 100);
-          } catch (error) {
-            console.error('Error initializing Stripe for update payment:', error);
-            cardErrors.value = 'Error initializing payment system. Please try again.';
-          }
+              }, 100);
+            })
+            .catch((error) => {
+              console.error('Error initializing Stripe for update payment:', error);
+              cardErrors.value = 'Error initializing payment system. Please check your internet connection and try again.';
+            });
         } else {
           // If Stripe.js is not loaded yet, try again in 100ms
           setTimeout(checkStripe, 100);
@@ -324,6 +367,7 @@ watch(() => showUpdatePaymentDialog.value, (isOpen: boolean) => {
     }
   } catch (error) {
     console.error('Error in update payment dialog watch handler:', error);
+    cardErrors.value = 'An unexpected error occurred. Please try again later.';
   }
 });
 
@@ -383,6 +427,39 @@ const getPlanInterval = (planId: string | null): string => {
   }
 };
 
+// Helper function to check if a plan is an enterprise plan
+const isEnterprisePlan = (planId: string | null): boolean => {
+  if (!planId) return false;
+
+  try {
+    const plans = availablePlans.value;
+    if (!plans || !Array.isArray(plans) || plans.length === 0) {
+      return false;
+    }
+
+    const plan = plans.find((p: any) => p.id === planId);
+    if (!plan) return false;
+
+    // Check if the plan name contains "enterprise" (case-insensitive)
+    return plan.name.toLowerCase().includes('enterprise');
+  } catch (error) {
+    console.error('Error checking if plan is enterprise:', error);
+    return false;
+  }
+};
+
+// Function to show enterprise plan toast notification
+const showEnterpriseToast = () => {
+  toast('Enterprise Plan', {
+    description: "Please contact our sales team for Enterprise plans. We'll create a custom solution for your business needs.",
+    duration: 5000,
+    action: {
+      label: 'Contact Sales',
+      onClick: () => window.location.href = 'mailto:sales@example.com'
+    }
+  });
+};
+
 // Helper function to safely format dates
 const formatDate = (dateString: string | null): string => {
   if (!dateString) return 'N/A';
@@ -409,6 +486,41 @@ const formatDate = (dateString: string | null): string => {
     return 'N/A';
   }
 };
+
+// Simulate loading and check for flash messages
+onMounted(() => {
+  setTimeout(() => {
+    isLoading.value = false;
+
+    // Check for flash messages
+    if (props.flash?.success) {
+      toast.success('Success', {
+        description: props.flash.success
+      });
+    }
+
+    if (props.flash?.error) {
+      toast.error('Error', {
+        description: props.flash.error
+      });
+    }
+
+    if (props.flash?.warning) {
+      toast.warning('Warning', {
+        description: props.flash.warning,
+        duration: 10000 // Show for 10 seconds
+      });
+    }
+
+    // Check for connection error
+    if (props.connectionError) {
+      toast.error('Connection Error', {
+        description: 'Unable to connect to payment service. Some subscription details may be limited until connection is restored.',
+        duration: 10000 // Show for 10 seconds
+      });
+    }
+  }, 1000);
+});
 
 // Function to sync subscription status with Stripe
 const syncSubscription = () => {
@@ -479,10 +591,243 @@ const generateInvoicePdf = (invoiceId: string) => {
   });
 };
 
+// Function to toggle selection of a single invoice
+const toggleInvoiceSelection = (invoiceId: string) => {
+  if (selectedInvoices.value.includes(invoiceId)) {
+    selectedInvoices.value = selectedInvoices.value.filter((id: string) => id !== invoiceId);
+  } else {
+    selectedInvoices.value.push(invoiceId);
+  }
+};
+
+// Function to toggle selection of all invoices
+const toggleSelectAllInvoices = () => {
+  selectAllInvoices.value = !selectAllInvoices.value;
+
+  if (selectAllInvoices.value) {
+    // Select all invoices
+    selectedInvoices.value = props.subscription?.invoices.map((invoice: any) => invoice.id) || [];
+  } else {
+    // Deselect all invoices
+    selectedInvoices.value = [];
+  }
+};
+
+// Function to toggle selection of all paid invoices
+const toggleSelectAllPaidInvoices = () => {
+  selectAllPaidInvoices.value = !selectAllPaidInvoices.value;
+
+  if (selectAllPaidInvoices.value) {
+    // Get all paid invoice IDs
+    const paidInvoiceIds = props.subscription?.grouped_invoices?.paid.map((invoice: any) => invoice.id) || [];
+
+    // Add all paid invoice IDs to the selection (avoiding duplicates)
+    paidInvoiceIds.forEach((id: string) => {
+      if (!selectedInvoices.value.includes(id)) {
+        selectedInvoices.value.push(id);
+      }
+    });
+  } else {
+    // Remove all paid invoice IDs from the selection
+    const paidInvoiceIds = props.subscription?.grouped_invoices?.paid.map((invoice: any) => invoice.id) || [];
+    selectedInvoices.value = selectedInvoices.value.filter((id: string) => !paidInvoiceIds.includes(id));
+  }
+};
+
+// Function to toggle selection of all pending invoices
+const toggleSelectAllPendingInvoices = () => {
+  selectAllPendingInvoices.value = !selectAllPendingInvoices.value;
+
+  if (selectAllPendingInvoices.value) {
+    // Get all pending invoice IDs
+    const pendingInvoiceIds = props.subscription?.grouped_invoices?.pending.map((invoice: any) => invoice.id) || [];
+
+    // Add all pending invoice IDs to the selection (avoiding duplicates)
+    pendingInvoiceIds.forEach((id: string) => {
+      if (!selectedInvoices.value.includes(id)) {
+        selectedInvoices.value.push(id);
+      }
+    });
+  } else {
+    // Remove all pending invoice IDs from the selection
+    const pendingInvoiceIds = props.subscription?.grouped_invoices?.pending.map((invoice: any) => invoice.id) || [];
+    selectedInvoices.value = selectedInvoices.value.filter((id: string) => !pendingInvoiceIds.includes(id));
+  }
+};
+
+// Function to handle batch progress notifications
+const handleBatchProgressNotification = (notification: Notification) => {
+  console.log('Handling batch notification in Billing.vue:', notification);
+
+  // Check if this is a Laravel Echo notification (which has a different structure)
+  if (notification.type && notification.type.startsWith('App\\Notifications\\')) {
+    // This is a Laravel Echo notification
+    if (notification.type === 'App\\Notifications\\InvoiceBatchProgress') {
+      // Update the batch progress
+      batchProgress.value = {
+        batchId: notification.batch_id,
+        totalInvoices: notification.total_invoices,
+        processedInvoices: notification.processed_invoices,
+        progress: notification.progress,
+        isComplete: false
+      };
+
+      // Only show toast for 50% and 100% progress
+      const significantProgress = [50, 100];
+      if (notification.progress && significantProgress.includes(notification.progress)) {
+        toast.info('Invoice Generation Progress', {
+          description: `${notification.processed_invoices} of ${notification.total_invoices} invoices processed (${notification.progress}%)`
+        });
+      }
+    } else if (notification.type === 'App\\Notifications\\InvoiceBatchComplete') {
+      // Update the batch progress to complete
+      batchProgress.value = {
+        batchId: notification.batch_id,
+        totalInvoices: notification.total_invoices,
+        processedInvoices: notification.successful_invoices || notification.total_invoices,
+        progress: 100,
+        isComplete: true
+      };
+
+      // Show a toast notification for completion
+      if (notification.success) {
+        toast.success('Invoice Generation Complete', {
+          description: `All ${notification.total_invoices} invoices have been generated successfully.`
+        });
+      } else {
+        toast.warning('Invoice Generation Completed with Issues', {
+          description: `${notification.successful_invoices || 0} of ${notification.total_invoices} invoices were generated successfully.`
+        });
+      }
+    }
+  } else {
+    // This is a direct notification (not from Laravel Echo)
+    if (notification.type === 'invoice_batch_progress') {
+      // Update the batch progress
+      batchProgress.value = {
+        batchId: notification.batch_id,
+        totalInvoices: notification.total_invoices,
+        processedInvoices: notification.processed_invoices,
+        progress: notification.progress,
+        isComplete: false
+      };
+
+      // Show a toast notification for significant progress (25%, 50%, 75%)
+      const progress = notification.progress || 0;
+      if ([25, 50, 75].includes(progress)) {
+        const processedInvoices = notification.processed_invoices || 0;
+        const totalInvoices = notification.total_invoices || 0;
+        toast.info('Invoice Generation Progress', {
+          description: `${processedInvoices} of ${totalInvoices} invoices processed (${progress}%)`
+        });
+      }
+    } else if (notification.type === 'invoice_batch_complete') {
+      // Update the batch progress to complete
+      batchProgress.value = {
+        batchId: notification.batch_id,
+        totalInvoices: notification.total_invoices,
+        processedInvoices: notification.successful_invoices,
+        progress: 100,
+        isComplete: true
+      };
+
+      // Show a toast notification for completion
+      if (notification.success) {
+        toast.success('Invoice Generation Complete', {
+          description: `All ${notification.total_invoices} invoices have been generated successfully.`
+        });
+      } else {
+        toast.warning('Invoice Generation Completed with Issues', {
+          description: `${notification.successful_invoices} of ${notification.total_invoices} invoices were generated successfully.`
+        });
+      }
+    }
+  }
+};
+
+// Function to generate multiple invoices
+const generateSelectedInvoices = async () => {
+  if (selectedInvoices.value.length === 0) {
+    toast.error('No invoices selected', {
+      description: 'Please select at least one invoice to generate.'
+    });
+    return;
+  }
+
+  isBulkGenerating.value = true;
+
+  try {
+    // Reset batch progress
+    batchProgress.value = {
+      batchId: null,
+      totalInvoices: selectedInvoices.value.length,
+      processedInvoices: 0,
+      progress: 0,
+      isComplete: false
+    };
+
+    // Send all selected invoice IDs in a single request
+    const response = await fetch(route('invoice.generate-batch'), {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'X-Requested-With': 'XMLHttpRequest',
+        'Accept': 'application/json',
+        'X-CSRF-TOKEN': document.querySelector('meta[name="csrf-token"]')?.getAttribute('content') || '',
+      },
+      body: JSON.stringify({
+        invoice_ids: selectedInvoices.value
+      })
+    });
+
+    if (!response.ok) {
+      throw new Error(`HTTP error! status: ${response.status}`);
+    }
+
+    // Parse the response but we don't need to use the result
+    await response.json();
+
+    // Show success message
+    toast.success('Bulk invoice generation started', {
+      description: `${selectedInvoices.value.length} invoice(s) are being processed in the background. You will receive progress updates.`
+    });
+
+    // Clear selection after successful operation
+    selectedInvoices.value = [];
+    selectAllInvoices.value = false;
+  } catch (error) {
+    console.error('Error generating invoices in batch:', error);
+    toast.error('Error starting batch generation', {
+      description: 'There was an error processing your request. Please try again later.'
+    });
+
+    // Reset batch progress on error
+    batchProgress.value = {
+      batchId: null,
+      totalInvoices: 0,
+      processedInvoices: 0,
+      progress: 0,
+      isComplete: false
+    };
+  } finally {
+    isBulkGenerating.value = false;
+  }
+};
+
 // Function to handle plan change or subscription
 const handlePlanChangeOrSubscribe = async () => {
   // Set the plan in the form
   subscriptionForm.plan = selectedPlan.value;
+
+  // Check if the selected plan is an enterprise plan
+  if (isEnterprisePlan(selectedPlan.value)) {
+    // Close the dialog
+    showChangePlanDialog.value = false;
+
+    // Show a toast notification for enterprise plans
+    showEnterpriseToast();
+    return;
+  }
 
   // If we already have a payment method on file, just update the plan
   if (props.subscription && props.subscription.card_brand) {
@@ -626,50 +971,122 @@ const handleCancelSubscription = () => {
   });
 };
 
-// Create a payment method with Stripe
+// Create a payment method with Stripe using our utility functions
 const createPaymentMethod = async (): Promise<string | null> => {
   try {
+    // Check for internet connectivity using our utility
+    if (!isOnline()) {
+      showStripeConnectivityError('Please check your internet connection and try again.');
+      return null;
+    }
+
     if (!stripe.value || !cardElement.value) {
       toast.error('Payment processing error', {
-        description: 'Stripe has not been initialized properly.'
+        description: 'Payment system is not available. Please try again later.'
       });
       return null;
     }
 
     try {
-      const { paymentMethod, error } = await stripe.value.createPaymentMethod({
-        type: 'card',
-        card: cardElement.value,
-      });
+      // Try to create a payment method with Stripe
+      let paymentMethodResult;
+
+      try {
+        paymentMethodResult = await stripe.value.createPaymentMethod({
+          type: 'card',
+          card: cardElement.value,
+        });
+      } catch (stripeError: any) {
+        // Use our utility to check if this is a connectivity error
+        if (isConnectivityError(stripeError)) {
+          showStripeConnectivityError('Unable to connect to payment service. Please check your internet connection and try again.');
+        } else {
+          toast.error('Payment processing error', {
+            description: getStripeErrorMessage(stripeError)
+          });
+        }
+        console.error('Stripe API error:', stripeError);
+        return null;
+      }
+
+      const { paymentMethod, error } = paymentMethodResult;
 
       if (error) {
-        toast.error('Payment error', {
-          description: error.message || 'There was an error processing your payment method.'
-        });
+        // Use our utility to handle different types of Stripe errors
+        if (isConnectivityError(error)) {
+          showStripeConnectivityError('Unable to connect to payment service. Please check your internet connection and try again.');
+        } else {
+          toast.error('Payment error', {
+            description: getStripeErrorMessage(error)
+          });
+        }
         return null;
       }
 
       if (!paymentMethod || !paymentMethod.id) {
         toast.error('Payment error', {
-          description: 'No payment method was created. Please try again.'
+          description: 'No payment method was created. Please try again later.'
         });
         return null;
       }
 
       return paymentMethod.id;
     } catch (error: any) {
-      toast.error('Payment processing error', {
-        description: error.message || 'There was an error processing your payment.'
-      });
+      // Use our utility to check if this is a connectivity error
+      if (isConnectivityError(error)) {
+        showStripeConnectivityError('Unable to connect to payment service. Please check your internet connection and try again.');
+      } else {
+        toast.error('Payment processing error', {
+          description: getStripeErrorMessage(error)
+        });
+      }
       console.error('Error creating payment method:', error);
       return null;
     }
   } catch (error: any) {
     toast.error('Unexpected error', {
-      description: 'An unexpected error occurred. Please try again.'
+      description: 'An unexpected error occurred. Please check your internet connection and try again later.'
     });
     console.error('Unexpected error in createPaymentMethod:', error);
     return null;
+  }
+};
+
+// Define notification type
+interface Notification {
+  id: string;
+  type: string;
+  data?: any;
+  batch_id?: string;
+  total_invoices?: number;
+  processed_invoices?: number;
+  successful_invoices?: number;
+  progress?: number;
+  success?: boolean;
+  time?: string;
+  created_at?: string;
+  read_at?: string | null;
+}
+
+// Function to set up Echo listeners for batch progress
+const setupEchoListeners = () => {
+  if (window.Echo) {
+    const userId = props.subscription?.user_id;
+
+    if (userId) {
+      // Listen for notifications on the user's private channel
+      window.Echo.private(`App.Models.User.${userId}`)
+        .notification((notification: Notification) => {
+          console.log('Received notification in Billing.vue:', notification);
+
+          // Pass the notification directly to the handler
+          handleBatchProgressNotification(notification);
+        });
+
+      console.log(`Listening for batch notifications on App.Models.User.${userId}`);
+    }
+  } else {
+    console.warn('Echo is not available. Real-time notifications will not work.');
   }
 };
 
@@ -702,6 +1119,9 @@ onMounted(() => {
         window.history.replaceState({}, document.title, newUrl);
       }
     }
+
+    // Set up Echo listeners for batch progress
+    setupEchoListeners();
   }, 1000);
 });
 </script>
@@ -716,6 +1136,21 @@ onMounted(() => {
         <div>
           <h1 class="text-2xl sm:text-3xl font-bold">Billing & Subscription</h1>
           <p class="text-sm sm:text-base text-muted-foreground">Manage your subscription and payment methods</p>
+        </div>
+      </div>
+
+      <!-- Connection Error Alert -->
+      <div v-if="connectionError || (subscription && subscription.connection_error)" class="bg-amber-50 dark:bg-amber-950 border border-amber-200 dark:border-amber-800 rounded-md p-4 mb-4">
+        <div class="flex">
+          <div class="flex-shrink-0">
+            <CircleAlert class="h-5 w-5 text-amber-400" />
+          </div>
+          <div class="ml-3">
+            <h3 class="text-sm font-medium text-amber-800 dark:text-amber-300">Connection Issue</h3>
+            <div class="mt-2 text-sm text-amber-700 dark:text-amber-400">
+              <p>{{ subscription?.connection_error_message || 'Unable to connect to payment service. Some subscription details may be limited until connection is restored.' }}</p>
+            </div>
+          </div>
         </div>
       </div>
 
@@ -741,7 +1176,7 @@ onMounted(() => {
                     Syncing...
                   </template>
                   <template v-else>
-                    <RefreshCw class="h-4 w-4 mr-1.5" />
+                    <RefreshCcw class="h-4 w-4 mr-1.5" />
                     Refresh Status
                   </template>
                 </Button>
@@ -776,9 +1211,17 @@ onMounted(() => {
                                 subscription.stripe_status === 'past_due' ? 'Past Due' :
                                 subscription.stripe_status }}
                             </Badge>
+                            <Badge v-if="subscription.offline_mode" variant="outline" class="ml-2 border-amber-300 text-amber-700 dark:border-amber-600 dark:text-amber-400">
+                              Offline Mode
+                            </Badge>
                         </div>
                         <p class="text-sm text-muted-foreground mt-1">
-                            ${{ subscription.price || '0.00' }}/{{ subscription.interval || 'month' }} •
+                            <template v-if="subscription.price !== null">
+                              ${{ subscription.price || '0.00' }}/{{ subscription.interval || 'month' }} •
+                            </template>
+                            <template v-else>
+                              <span class="italic">Price unavailable in offline mode</span> •
+                            </template>
                             {{ subscription.ends_at ? 'Ends on ' + formatDate(subscription.ends_at) :
                             subscription.trial_ends_at ? 'Trial ends on ' + formatDate(subscription.trial_ends_at) :
                             'Next billing on ' + formatDate(subscription.next_billing_date) }}
@@ -799,6 +1242,7 @@ onMounted(() => {
                             @click="() => {
                               // Set the current plan as selected
                               selectedPlan = subscription.stripe_price;
+
                               // Don't show plan selection initially
                               showPlanSelection = false;
                               // Open the dialog
@@ -900,13 +1344,33 @@ onMounted(() => {
                 </div>
               </div>
 
+              <!-- Offline Mode Warning for Plans -->
+              <div v-if="availablePlans.length > 0 && availablePlans[0].offline_mode" class="bg-amber-50 dark:bg-amber-950 border border-amber-200 dark:border-amber-800 rounded-md p-4 mb-4">
+                <div class="flex">
+                  <div class="flex-shrink-0">
+                    <AlertCircle class="h-5 w-5 text-amber-400" />
+                  </div>
+                  <div class="ml-3">
+                    <h3 class="text-sm font-medium text-amber-800 dark:text-amber-300">Connection Issue</h3>
+                    <div class="mt-2 text-sm text-amber-700 dark:text-amber-400">
+                      <p>Unable to connect to payment service. Plan information is being displayed from local data and may not be up to date.</p>
+                    </div>
+                  </div>
+                </div>
+              </div>
+
               <div v-if="availablePlans.length > 0" class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4 sm:gap-6">
                 <div v-for="plan in availablePlans" :key="plan.id"
                   class="border rounded-lg p-4 sm:p-6 flex flex-col hover:shadow-md transition-all duration-200"
                   :class="{ 'border-primary ring-2 ring-primary/20': selectedPlan === plan.id }"
                 >
                   <div class="mb-4">
-                    <h3 class="text-lg sm:text-xl font-bold">{{ plan.name }}</h3>
+                    <div class="flex items-center gap-2 mb-1">
+                      <h3 class="text-lg sm:text-xl font-bold">{{ plan.name }}</h3>
+                      <Badge v-if="plan.offline_mode" variant="outline" class="border-amber-300 text-amber-700 dark:border-amber-600 dark:text-amber-400">
+                        Offline
+                      </Badge>
+                    </div>
                     <div class="flex items-end mt-2">
                       <span class="text-2xl sm:text-3xl font-bold">${{ plan.price }}</span>
                       <span class="text-muted-foreground ml-1">/ {{ plan.interval }}</span>
@@ -934,6 +1398,13 @@ onMounted(() => {
                     :variant="selectedPlan === plan.id ? 'default' : 'outline'"
                     @click="() => {
                       selectedPlan = plan.id;
+
+                      // Check if this is an enterprise plan
+                      if (isEnterprisePlan(plan.id)) {
+                        showEnterpriseToast();
+                        return;
+                      }
+
                       showPlanSelection = false;
                       showChangePlanDialog = true;
                     }"
@@ -975,12 +1446,274 @@ onMounted(() => {
               <div v-if="isLoading" class="space-y-3">
                 <Skeleton class="h-[100px] w-full" />
               </div>
-              <div v-else class="overflow-x-auto">
-                <!-- Responsive table with horizontal scrolling on small screens -->
-                <div class="min-w-full">
+              <div v-else>
+                <!-- Bulk actions for selected invoices -->
+                <div v-if="subscription.invoices && subscription.invoices.length > 0" class="mb-4 flex items-center justify-between">
+                  <div class="flex items-center">
+                    <span class="text-sm text-muted-foreground mr-2">
+                      {{ selectedInvoices.length }} of {{ subscription.invoices.length }} selected
+                    </span>
+                  </div>
+                  <div class="flex items-center space-x-2">
+                    <DropdownMenu v-if="selectedInvoices.length > 0">
+                      <DropdownMenuTrigger as-child>
+                        <Button variant="outline" size="sm">
+                          Bulk Actions
+                          <ChevronDown class="ml-2 h-4 w-4" />
+                        </Button>
+                      </DropdownMenuTrigger>
+                      <DropdownMenuContent align="end">
+                        <DropdownMenuItem @click="generateSelectedInvoices" :disabled="isBulkGenerating">
+                          <FileDown class="mr-2 h-4 w-4" />
+                          <span v-if="isBulkGenerating">Processing...</span>
+                          <span v-else>Generate PDFs</span>
+                        </DropdownMenuItem>
+                        <DropdownMenuSeparator />
+                        <DropdownMenuItem @click="selectedInvoices = []">
+                          <X class="mr-2 h-4 w-4" />
+                          Clear Selection
+                        </DropdownMenuItem>
+                      </DropdownMenuContent>
+                    </DropdownMenu>
+                  </div>
+                </div>
+
+                <!-- Tabs for invoice types -->
+                <Tabs v-if="subscription.grouped_invoices" default-value="all" class="mb-6">
+                  <TabsList class="grid w-full grid-cols-4">
+                    <TabsTrigger value="all">All</TabsTrigger>
+                    <TabsTrigger value="paid">Paid</TabsTrigger>
+                    <TabsTrigger value="pending">Pending</TabsTrigger>
+                    <TabsTrigger value="upcoming">Upcoming</TabsTrigger>
+                  </TabsList>
+
+                  <!-- All Invoices Tab -->
+                  <TabsContent value="all">
+                    <div class="overflow-x-auto min-w-full">
+                      <table class="w-full border-collapse">
+                        <thead>
+                          <tr class="border-b">
+                            <th class="py-3 px-2 text-left font-medium whitespace-nowrap">
+                              <input
+                                type="checkbox"
+                                :checked="selectAllInvoices"
+                                @change="toggleSelectAllInvoices"
+                                class="h-4 w-4 rounded border-gray-300 text-primary focus:ring-primary"
+                              />
+                            </th>
+                            <th class="py-3 px-2 text-left font-medium whitespace-nowrap">Invoice ID</th>
+                            <th class="py-3 px-2 text-left font-medium whitespace-nowrap">Date</th>
+                            <th class="py-3 px-2 text-left font-medium whitespace-nowrap">Amount</th>
+                            <th class="py-3 px-2 text-left font-medium whitespace-nowrap">Status</th>
+                            <th class="py-3 px-2 text-left font-medium whitespace-nowrap">Actions</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          <tr v-for="invoice in subscription.invoices" :key="invoice.id" class="border-b" :class="{ 'bg-muted/40': selectedInvoices.includes(invoice.id) }">
+                            <td class="py-3 px-2">
+                              <input
+                                type="checkbox"
+                                :checked="selectedInvoices.includes(invoice.id)"
+                                @change="toggleInvoiceSelection(invoice.id)"
+                                class="h-4 w-4 rounded border-gray-300 text-primary focus:ring-primary"
+                              />
+                            </td>
+                            <td class="py-3 px-2 font-medium">{{ invoice.id }}</td>
+                            <td class="py-3 px-2 whitespace-nowrap">{{ invoice.date }}</td>
+                            <td class="py-3 px-2 whitespace-nowrap">{{ invoice.formatted_amount }}</td>
+                            <td class="py-3 px-2">
+                              <Badge :variant="invoice.status === 'paid' ? 'default' : 'outline'">
+                                {{ invoice.status }}
+                              </Badge>
+                            </td>
+                            <td class="py-3 px-2">
+                              <Button
+                                variant="outline"
+                                size="sm"
+                                @click="generateInvoicePdf(invoice.id)"
+                                :disabled="isGeneratingInvoice[invoice.id]"
+                                class="whitespace-nowrap"
+                              >
+                                <FileDown class="h-4 w-4 mr-1" />
+                                <span v-if="isGeneratingInvoice[invoice.id]" class="hidden sm:inline">Processing...</span>
+                                <span v-else class="hidden sm:inline">Download PDF</span>
+                                <span v-if="isGeneratingInvoice[invoice.id]" class="sm:hidden">...</span>
+                              </Button>
+                            </td>
+                          </tr>
+                          <tr v-if="!subscription.invoices || subscription.invoices.length === 0">
+                            <td colspan="6" class="text-center py-4">
+                              No invoices found for this subscription
+                            </td>
+                          </tr>
+                        </tbody>
+                      </table>
+                    </div>
+                  </TabsContent>
+
+                  <!-- Paid Invoices Tab -->
+                  <TabsContent value="paid">
+                    <div class="overflow-x-auto min-w-full">
+                      <table class="w-full border-collapse">
+                        <thead>
+                          <tr class="border-b">
+                            <th class="py-3 px-2 text-left font-medium whitespace-nowrap">
+                              <input
+                                type="checkbox"
+                                :checked="selectAllPaidInvoices"
+                                @change="toggleSelectAllPaidInvoices"
+                                class="h-4 w-4 rounded border-gray-300 text-primary focus:ring-primary"
+                              />
+                            </th>
+                            <th class="py-3 px-2 text-left font-medium whitespace-nowrap">Invoice ID</th>
+                            <th class="py-3 px-2 text-left font-medium whitespace-nowrap">Date</th>
+                            <th class="py-3 px-2 text-left font-medium whitespace-nowrap">Amount</th>
+                            <th class="py-3 px-2 text-left font-medium whitespace-nowrap">Actions</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          <tr v-for="invoice in subscription.grouped_invoices.paid" :key="invoice.id" class="border-b" :class="{ 'bg-muted/40': selectedInvoices.includes(invoice.id) }">
+                            <td class="py-3 px-2">
+                              <input
+                                type="checkbox"
+                                :checked="selectedInvoices.includes(invoice.id)"
+                                @change="toggleInvoiceSelection(invoice.id)"
+                                class="h-4 w-4 rounded border-gray-300 text-primary focus:ring-primary"
+                              />
+                            </td>
+                            <td class="py-3 px-2 font-medium">{{ invoice.id }}</td>
+                            <td class="py-3 px-2 whitespace-nowrap">{{ invoice.date }}</td>
+                            <td class="py-3 px-2 whitespace-nowrap">{{ invoice.formatted_amount }}</td>
+                            <td class="py-3 px-2">
+                              <Button
+                                variant="outline"
+                                size="sm"
+                                @click="generateInvoicePdf(invoice.id)"
+                                :disabled="isGeneratingInvoice[invoice.id]"
+                                class="whitespace-nowrap"
+                              >
+                                <FileDown class="h-4 w-4 mr-1" />
+                                <span v-if="isGeneratingInvoice[invoice.id]" class="hidden sm:inline">Processing...</span>
+                                <span v-else class="hidden sm:inline">Download PDF</span>
+                                <span v-if="isGeneratingInvoice[invoice.id]" class="sm:hidden">...</span>
+                              </Button>
+                            </td>
+                          </tr>
+                          <tr v-if="!subscription.grouped_invoices.paid || subscription.grouped_invoices.paid.length === 0">
+                            <td colspan="5" class="text-center py-4">
+                              No paid invoices found
+                            </td>
+                          </tr>
+                        </tbody>
+                      </table>
+                    </div>
+                  </TabsContent>
+
+                  <!-- Pending Invoices Tab -->
+                  <TabsContent value="pending">
+                    <div class="overflow-x-auto min-w-full">
+                      <table class="w-full border-collapse">
+                        <thead>
+                          <tr class="border-b">
+                            <th class="py-3 px-2 text-left font-medium whitespace-nowrap">
+                              <input
+                                type="checkbox"
+                                :checked="selectAllPendingInvoices"
+                                @change="toggleSelectAllPendingInvoices"
+                                class="h-4 w-4 rounded border-gray-300 text-primary focus:ring-primary"
+                              />
+                            </th>
+                            <th class="py-3 px-2 text-left font-medium whitespace-nowrap">Invoice ID</th>
+                            <th class="py-3 px-2 text-left font-medium whitespace-nowrap">Date</th>
+                            <th class="py-3 px-2 text-left font-medium whitespace-nowrap">Amount</th>
+                            <th class="py-3 px-2 text-left font-medium whitespace-nowrap">Actions</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          <tr v-for="invoice in subscription.grouped_invoices.pending" :key="invoice.id" class="border-b" :class="{ 'bg-muted/40': selectedInvoices.includes(invoice.id) }">
+                            <td class="py-3 px-2">
+                              <input
+                                type="checkbox"
+                                :checked="selectedInvoices.includes(invoice.id)"
+                                @change="toggleInvoiceSelection(invoice.id)"
+                                class="h-4 w-4 rounded border-gray-300 text-primary focus:ring-primary"
+                              />
+                            </td>
+                            <td class="py-3 px-2 font-medium">{{ invoice.id }}</td>
+                            <td class="py-3 px-2 whitespace-nowrap">{{ invoice.date }}</td>
+                            <td class="py-3 px-2 whitespace-nowrap">{{ invoice.formatted_amount }}</td>
+                            <td class="py-3 px-2">
+                              <Button
+                                variant="outline"
+                                size="sm"
+                                @click="generateInvoicePdf(invoice.id)"
+                                :disabled="isGeneratingInvoice[invoice.id]"
+                                class="whitespace-nowrap"
+                              >
+                                <FileDown class="h-4 w-4 mr-1" />
+                                <span v-if="isGeneratingInvoice[invoice.id]" class="hidden sm:inline">Processing...</span>
+                                <span v-else class="hidden sm:inline">Download PDF</span>
+                                <span v-if="isGeneratingInvoice[invoice.id]" class="sm:hidden">...</span>
+                              </Button>
+                            </td>
+                          </tr>
+                          <tr v-if="!subscription.grouped_invoices.pending || subscription.grouped_invoices.pending.length === 0">
+                            <td colspan="5" class="text-center py-4">
+                              No pending invoices found
+                            </td>
+                          </tr>
+                        </tbody>
+                      </table>
+                    </div>
+                  </TabsContent>
+
+                  <!-- Upcoming Invoices Tab -->
+                  <TabsContent value="upcoming">
+                    <div class="overflow-x-auto min-w-full">
+                      <table class="w-full border-collapse">
+                        <thead>
+                          <tr class="border-b">
+                            <th class="py-3 px-2 text-left font-medium whitespace-nowrap">Invoice ID</th>
+                            <th class="py-3 px-2 text-left font-medium whitespace-nowrap">Date</th>
+                            <th class="py-3 px-2 text-left font-medium whitespace-nowrap">Amount</th>
+                            <th class="py-3 px-2 text-left font-medium whitespace-nowrap">Status</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          <tr v-for="invoice in subscription.grouped_invoices.upcoming" :key="invoice.id" class="border-b">
+                            <td class="py-3 px-2 font-medium">{{ invoice.id }}</td>
+                            <td class="py-3 px-2 whitespace-nowrap">{{ invoice.date }}</td>
+                            <td class="py-3 px-2 whitespace-nowrap">{{ invoice.formatted_amount }}</td>
+                            <td class="py-3 px-2">
+                              <Badge variant="secondary">
+                                Upcoming
+                              </Badge>
+                            </td>
+                          </tr>
+                          <tr v-if="!subscription.grouped_invoices.upcoming || subscription.grouped_invoices.upcoming.length === 0">
+                            <td colspan="4" class="text-center py-4">
+                              No upcoming invoices found
+                            </td>
+                          </tr>
+                        </tbody>
+                      </table>
+                    </div>
+                  </TabsContent>
+                </Tabs>
+
+                <!-- Fallback to original table if grouped invoices not available -->
+                <div v-else class="overflow-x-auto min-w-full">
                   <table class="w-full border-collapse">
                     <thead>
                       <tr class="border-b">
+                        <th class="py-3 px-2 text-left font-medium whitespace-nowrap">
+                          <input
+                            type="checkbox"
+                            :checked="selectAllInvoices"
+                            @change="toggleSelectAllInvoices"
+                            class="h-4 w-4 rounded border-gray-300 text-primary focus:ring-primary"
+                          />
+                        </th>
                         <th class="py-3 px-2 text-left font-medium whitespace-nowrap">Invoice ID</th>
                         <th class="py-3 px-2 text-left font-medium whitespace-nowrap">Date</th>
                         <th class="py-3 px-2 text-left font-medium whitespace-nowrap">Amount</th>
@@ -989,7 +1722,15 @@ onMounted(() => {
                       </tr>
                     </thead>
                     <tbody>
-                      <tr v-for="invoice in subscription.invoices" :key="invoice.id" class="border-b">
+                      <tr v-for="invoice in subscription.invoices" :key="invoice.id" class="border-b" :class="{ 'bg-muted/40': selectedInvoices.includes(invoice.id) }">
+                        <td class="py-3 px-2">
+                          <input
+                            type="checkbox"
+                            :checked="selectedInvoices.includes(invoice.id)"
+                            @change="toggleInvoiceSelection(invoice.id)"
+                            class="h-4 w-4 rounded border-gray-300 text-primary focus:ring-primary"
+                          />
+                        </td>
                         <td class="py-3 px-2 font-medium">{{ invoice.id }}</td>
                         <td class="py-3 px-2 whitespace-nowrap">{{ invoice.date }}</td>
                         <td class="py-3 px-2 whitespace-nowrap">{{ invoice.formatted_amount }}</td>
@@ -1014,7 +1755,7 @@ onMounted(() => {
                         </td>
                       </tr>
                       <tr v-if="!subscription.invoices || subscription.invoices.length === 0">
-                        <td colspan="5" class="text-center py-4">
+                        <td colspan="6" class="text-center py-4">
                           No invoices found for this subscription
                         </td>
                       </tr>
@@ -1098,6 +1839,17 @@ onMounted(() => {
                 :class="{ 'border-primary ring-2 ring-primary/20': selectedPlan === plan.id }"
                 @click="() => {
                   selectedPlan = plan.id;
+
+                  // Check if this is an enterprise plan
+                  if (isEnterprisePlan(plan.id)) {
+                    // Close the dialog
+                    showChangePlanDialog = false;
+
+                    // Show a toast notification for enterprise plans
+                    showEnterpriseToast();
+                    return;
+                  }
+
                   showPlanSelection = false;
                 }"
               >

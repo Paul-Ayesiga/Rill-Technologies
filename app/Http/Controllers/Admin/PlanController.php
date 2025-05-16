@@ -146,16 +146,136 @@ class PlanController extends Controller
         try {
             Stripe::setApiKey(config('cashier.secret'));
 
-            // Archive the price (cannot delete prices in Stripe)
-            Price::update($id, [
-                'active' => false,
-            ]);
+            Log::info('Attempting to archive plan with ID: ' . $id);
+
+            // Get the price to get the product ID
+            try {
+                $price = Price::retrieve($id);
+                Log::info('Retrieved price: ' . json_encode($price));
+            } catch (\Exception $e) {
+                Log::error('Failed to retrieve price: ' . $e->getMessage());
+                return back()->withErrors(['error' => 'Failed to retrieve price: ' . $e->getMessage()]);
+            }
+
+            // First, archive the product
+            try {
+                if (!isset($price->product)) {
+                    Log::error('Product ID not found in price object');
+                    return back()->withErrors(['error' => 'Product ID not found in price object']);
+                }
+
+                // Get the product to check if this price is the default and preserve metadata
+                $product = Product::retrieve($price->product);
+                Log::info('Retrieved product: ' . json_encode($product));
+
+                // Preserve the metadata
+                $metadata = isset($product->metadata) ? $product->metadata->toArray() : [];
+                Log::info('Preserving metadata: ' . json_encode($metadata));
+
+                // Archive the product first while preserving metadata
+                Product::update($price->product, [
+                    'active' => false,
+                    'metadata' => $metadata, // Preserve the existing metadata
+                ]);
+                Log::info('Product archived successfully');
+            } catch (\Exception $e) {
+                Log::error('Failed to archive product: ' . $e->getMessage());
+                return back()->withErrors(['error' => 'Failed to archive product: ' . $e->getMessage()]);
+            }
+
+            // Now try to archive the price
+            try {
+                Price::update($id, [
+                    'active' => false,
+                ]);
+                Log::info('Price archived successfully');
+            } catch (\Exception $e) {
+                // If we can't archive the price but we've already archived the product,
+                // that's okay - the product being archived is what matters most
+                Log::warning('Could not archive price, but product was archived: ' . $e->getMessage());
+                // We don't return an error here because the product was successfully archived
+            }
 
             return redirect()->route('admin.plans.index')
                 ->with('success', 'Plan archived successfully!');
         } catch (ApiErrorException $e) {
             Log::error('Stripe API Error: ' . $e->getMessage());
             return back()->withErrors(['error' => 'Failed to archive plan: ' . $e->getMessage()]);
+        } catch (\Exception $e) {
+            Log::error('General Error: ' . $e->getMessage());
+            return back()->withErrors(['error' => 'Failed to archive plan: ' . $e->getMessage()]);
+        }
+    }
+
+    /**
+     * Unarchive a plan in Stripe.
+     *
+     * @param  string  $id
+     * @return \Illuminate\Http\RedirectResponse
+     */
+    public function unarchive($id)
+    {
+        try {
+            Stripe::setApiKey(config('cashier.secret'));
+
+            Log::info('Attempting to unarchive plan with ID: ' . $id);
+
+            // Get the price to get the product ID
+            try {
+                $price = Price::retrieve($id);
+                Log::info('Retrieved price: ' . json_encode($price));
+            } catch (\Exception $e) {
+                Log::error('Failed to retrieve price: ' . $e->getMessage());
+                return back()->withErrors(['error' => 'Failed to retrieve price: ' . $e->getMessage()]);
+            }
+
+            // First, unarchive the product
+            try {
+                if (!isset($price->product)) {
+                    Log::error('Product ID not found in price object');
+                    return back()->withErrors(['error' => 'Product ID not found in price object']);
+                }
+
+                // Get the product to check if this price is the default and preserve metadata
+                $product = Product::retrieve($price->product);
+                Log::info('Retrieved product: ' . json_encode($product));
+
+                // Preserve the metadata
+                $metadata = isset($product->metadata) ? $product->metadata->toArray() : [];
+                Log::info('Preserving metadata: ' . json_encode($metadata));
+
+                // Unarchive the product first while preserving metadata
+                Product::update($price->product, [
+                    'active' => true,
+                    'metadata' => $metadata, // Preserve the existing metadata
+                ]);
+                Log::info('Product unarchived successfully');
+            } catch (\Exception $e) {
+                Log::error('Failed to unarchive product: ' . $e->getMessage());
+                return back()->withErrors(['error' => 'Failed to unarchive product: ' . $e->getMessage()]);
+            }
+
+            // Now try to unarchive the price
+            try {
+                Price::update($id, [
+                    'active' => true,
+                ]);
+                Log::info('Price unarchived successfully');
+            } catch (\Exception $e) {
+                // If we can't unarchive the price but we've already unarchived the product,
+                // that's okay - the product being unarchived is what matters most
+                Log::warning('Could not unarchive price, but product was unarchived: ' . $e->getMessage());
+                // We don't return an error here because the product was successfully unarchived
+            }
+
+            return redirect()->route('admin.plans.index')
+                ->with('success', 'Plan unarchived successfully!');
+        } catch (ApiErrorException $e) {
+            Log::error('Stripe API Error: ' . $e->getMessage());
+            return back()->withErrors(['error' => 'Failed to unarchive plan: ' . $e->getMessage()]);
+        } catch (\Exception $e) {
+            Log::error('General Error: ' . $e->getMessage());
+            return back()->withErrors(['error' => 'Failed to unarchive plan: ' . $e->getMessage()]);
         }
     }
 
@@ -169,17 +289,18 @@ class PlanController extends Controller
         try {
             Stripe::setApiKey(config('cashier.secret'));
 
+            $plans = [];
+
             // Get all active prices with their products
-            $prices = Price::all([
+            $activePrices = Price::all([
                 'active' => true,
                 'type' => 'recurring',
                 'expand' => ['data.product'],
                 'limit' => 100,
             ]);
 
-            $plans = [];
-
-            foreach ($prices->data as $price) {
+            // Process active prices with active products
+            foreach ($activePrices->data as $price) {
                 // Skip if product is not active
                 if (!$price->product->active) {
                     continue;
@@ -208,7 +329,53 @@ class PlanController extends Controller
                     'features' => $features,
                     'trial_days' => $trialDays,
                     'created' => date('Y-m-d H:i:s', $price->created),
+                    'active' => true,
+                    'archived' => false,
                 ];
+            }
+
+            // Get archived products
+            $archivedProducts = Product::all([
+                'active' => false,
+                'limit' => 100,
+            ]);
+
+            // For each archived product, get its prices
+            foreach ($archivedProducts->data as $product) {
+                $productPrices = Price::all([
+                    'product' => $product->id,
+                    'type' => 'recurring',
+                    'limit' => 10,
+                ]);
+
+                foreach ($productPrices->data as $price) {
+                    // Extract features from product metadata
+                    $features = [];
+                    if (isset($product->metadata->features)) {
+                        $features = json_decode($product->metadata->features, true) ?? [];
+                    }
+
+                    // Extract trial days from product metadata
+                    $trialDays = null;
+                    if (isset($product->metadata->trial_days)) {
+                        $trialDays = (int) $product->metadata->trial_days;
+                    }
+
+                    $plans[] = [
+                        'id' => $price->id,
+                        'product_id' => $product->id,
+                        'name' => $product->name . ' (Archived)',
+                        'description' => $product->description,
+                        'price' => $price->unit_amount / 100,
+                        'interval' => $price->recurring->interval,
+                        'currency' => $price->currency,
+                        'features' => $features,
+                        'trial_days' => $trialDays,
+                        'created' => date('Y-m-d H:i:s', $price->created),
+                        'active' => false,
+                        'archived' => true,
+                    ];
+                }
             }
 
             return $plans;

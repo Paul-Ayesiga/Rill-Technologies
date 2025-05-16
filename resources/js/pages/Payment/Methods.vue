@@ -51,6 +51,10 @@ const showAddPaymentDialog = ref(false);
 const showDeleteDialog = ref(false);
 const selectedPaymentMethod = ref(null);
 const cardErrors = ref('');
+const stripe = ref<any>(null);
+const cardElement = ref<any>(null);
+const cardComplete = ref(false);
+const stripeLoading = ref(true);
 
 // Forms
 const addPaymentForm = useForm({
@@ -65,12 +69,282 @@ const defaultPaymentForm = useForm({
   payment_method: '',
 });
 
-// Methods
-const addPaymentMethod = () => {
-  // In a real implementation, you would use Stripe.js to create a payment method
-  // and then submit the form with the payment method ID
-  addPaymentForm.payment_method = 'pm_card_visa'; // This is a test payment method
+// Load Stripe.js script
+const loadStripeScript = () => {
+  try {
+    // Check if we're in a browser environment
+    if (typeof document !== 'undefined') {
+      // Check for internet connectivity
+      if (!navigator.onLine) {
+        console.error('No internet connection detected when loading Stripe script');
+        cardErrors.value = 'No internet connection. Please check your connection and try again.';
+        return;
+      }
 
+      const script = document.createElement('script');
+      script.src = 'https://js.stripe.com/v3/';
+      script.async = true;
+
+      // Add error handling for script loading
+      script.onerror = () => {
+        console.error('Failed to load Stripe.js script');
+        cardErrors.value = 'Unable to connect to payment service. Please check your internet connection and try again.';
+      };
+
+      document.head.appendChild(script);
+    } else {
+      console.error('Document is not defined, cannot load Stripe script');
+      cardErrors.value = 'Payment system could not be initialized. Please try again later.';
+    }
+  } catch (error) {
+    console.error('Error loading Stripe script:', error);
+    cardErrors.value = 'Error loading payment system. Please check your internet connection and try again.';
+  }
+};
+
+// Initialize Stripe Elements
+const initializeStripe = () => {
+  try {
+    // Check if we're in a browser environment
+    if (typeof window === 'undefined') {
+      console.error('Window is not defined, cannot initialize Stripe');
+      return;
+    }
+
+    // Check if Stripe is already loaded
+    if (window.Stripe) {
+      stripeLoading.value = false;
+
+      try {
+        // Check for internet connectivity before initializing Stripe
+        if (!navigator.onLine) {
+          console.error('No internet connection detected');
+          cardErrors.value = 'No internet connection. Please check your connection and try again.';
+          return;
+        }
+
+        try {
+          stripe.value = window.Stripe(props.stripeKey);
+        } catch (stripeError) {
+          console.error('Error initializing Stripe object:', stripeError);
+          cardErrors.value = 'Unable to connect to payment service. Please check your internet connection and try again.';
+          return;
+        }
+
+        // Wait for the DOM to be updated
+        setTimeout(() => {
+          try {
+            // Check again for internet connectivity
+            if (!navigator.onLine) {
+              console.error('No internet connection detected when creating elements');
+              cardErrors.value = 'No internet connection. Please check your connection and try again.';
+              return;
+            }
+
+            let elements;
+            try {
+              elements = stripe.value.elements({
+                clientSecret: props.setupIntent.client_secret
+              });
+            } catch (elementsError) {
+              console.error('Error creating Stripe elements:', elementsError);
+              cardErrors.value = 'Unable to initialize payment form. Please check your internet connection and try again.';
+              return;
+            }
+
+            // Create the card element
+            cardElement.value = elements.create('card', {
+              style: {
+                base: {
+                  color: '#32325d',
+                  fontFamily: '"Helvetica Neue", Helvetica, sans-serif',
+                  fontSmoothing: 'antialiased',
+                  fontSize: '16px',
+                  '::placeholder': {
+                    color: '#aab7c4'
+                  }
+                },
+                invalid: {
+                  color: '#fa755a',
+                  iconColor: '#fa755a'
+                }
+              }
+            });
+
+            // Mount the card element to the DOM
+            const cardElementContainer = document.getElementById('card-element');
+            if (cardElementContainer) {
+              try {
+                cardElement.value.mount('#card-element');
+
+                // Listen for changes in the card element
+                cardElement.value.on('change', (event: any) => {
+                  cardComplete.value = event.complete;
+                  cardErrors.value = event.error ? event.error.message : '';
+                });
+              } catch (mountError) {
+                console.error('Error mounting card element:', mountError);
+                cardErrors.value = 'Unable to display payment form. Please try again later.';
+              }
+            } else {
+              console.warn('Card element container not found');
+              cardErrors.value = 'Payment form could not be displayed. Please try again.';
+            }
+          } catch (error) {
+            console.error('Error initializing Stripe elements:', error);
+            cardErrors.value = 'Error initializing payment form. Please check your internet connection and try again.';
+          }
+        }, 100);
+      } catch (error) {
+        console.error('Error initializing Stripe:', error);
+        cardErrors.value = 'Error initializing payment system. Please check your internet connection and try again.';
+      }
+    } else {
+      // If Stripe.js is not loaded yet, try again in 100ms
+      setTimeout(initializeStripe, 100);
+    }
+  } catch (error) {
+    console.error('Unexpected error in initializeStripe:', error);
+    cardErrors.value = 'An unexpected error occurred. Please check your internet connection and try again.';
+  }
+};
+
+// Watch for dialog open/close to initialize/cleanup Stripe
+watch(() => showAddPaymentDialog.value, (isOpen: boolean) => {
+  try {
+    if (isOpen) {
+      // Load Stripe.js if not already loaded
+      if (typeof window !== 'undefined' && !window.Stripe) {
+        loadStripeScript();
+      }
+      // Initialize Stripe Elements
+      initializeStripe();
+    } else {
+      // Cleanup when dialog is closed
+      if (cardElement.value) {
+        try {
+          cardElement.value.unmount();
+          cardElement.value = null;
+        } catch (error) {
+          console.error('Error unmounting card element:', error);
+        }
+      }
+    }
+  } catch (error) {
+    console.error('Error in dialog watch handler:', error);
+  }
+});
+
+// Create a payment method with Stripe
+const createPaymentMethod = async (): Promise<string | null> => {
+  try {
+    // Check for internet connectivity
+    if (!navigator.onLine) {
+      toast.error('No internet connection', {
+        description: 'Please check your internet connection and try again.'
+      });
+      return null;
+    }
+
+    if (!stripe.value || !cardElement.value) {
+      toast.error('Payment processing error', {
+        description: 'Payment system is not available. Please try again later.'
+      });
+      return null;
+    }
+
+    try {
+      // Try to create a payment method with Stripe
+      let paymentMethodResult;
+
+      try {
+        paymentMethodResult = await stripe.value.createPaymentMethod({
+          type: 'card',
+          card: cardElement.value,
+        });
+      } catch (stripeError: any) {
+        // Handle network errors specifically
+        if (stripeError.type === 'network_error' || !navigator.onLine) {
+          toast.error('Connection error', {
+            description: 'Unable to connect to payment service. Please check your internet connection and try again.'
+          });
+        } else {
+          toast.error('Payment processing error', {
+            description: stripeError.message || 'There was an error processing your payment. Please try again.'
+          });
+        }
+        console.error('Stripe API error:', stripeError);
+        return null;
+      }
+
+      const { paymentMethod, error } = paymentMethodResult;
+
+      if (error) {
+        // Handle different types of Stripe errors
+        if (error.type === 'network_error' || error.type === 'api_connection_error') {
+          toast.error('Connection error', {
+            description: 'Unable to connect to payment service. Please check your internet connection and try again.'
+          });
+        } else {
+          toast.error('Payment error', {
+            description: error.message || 'There was an error processing your payment method.'
+          });
+        }
+        return null;
+      }
+
+      if (!paymentMethod || !paymentMethod.id) {
+        toast.error('Payment error', {
+          description: 'No payment method was created. Please try again later.'
+        });
+        return null;
+      }
+
+      return paymentMethod.id;
+    } catch (error: any) {
+      // Check if this is a network error
+      if (error.name === 'NetworkError' || error.message?.includes('network') || !navigator.onLine) {
+        toast.error('Connection error', {
+          description: 'Unable to connect to payment service. Please check your internet connection and try again.'
+        });
+      } else {
+        toast.error('Payment processing error', {
+          description: error.message || 'There was an error processing your payment.'
+        });
+      }
+      console.error('Error creating payment method:', error);
+      return null;
+    }
+  } catch (error: any) {
+    toast.error('Unexpected error', {
+      description: 'An unexpected error occurred. Please check your internet connection and try again later.'
+    });
+    console.error('Unexpected error in createPaymentMethod:', error);
+    return null;
+  }
+};
+
+// Methods
+const addPaymentMethod = async () => {
+  // Check for internet connectivity
+  if (!navigator.onLine) {
+    toast.error('No internet connection', {
+      description: 'Please check your internet connection and try again.'
+    });
+    return;
+  }
+
+  // Create a payment method with Stripe
+  const paymentMethodId = await createPaymentMethod();
+
+  if (!paymentMethodId) {
+    return; // Error already handled in createPaymentMethod
+  }
+
+  // Set the payment method ID in the form
+  addPaymentForm.payment_method = paymentMethodId;
+
+  // Submit the form
   addPaymentForm.post(route('payment.methods.store'), {
     onSuccess: () => {
       showAddPaymentDialog.value = false;

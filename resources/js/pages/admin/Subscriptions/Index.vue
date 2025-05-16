@@ -124,6 +124,17 @@ const columns: ColumnDef<Subscription>[] = [
     cell: ({ row }: any) => {
       const planName = row.getValue('planName');
       console.log('Plan name value:', planName);
+
+      // Check if the plan name contains "(Archived)"
+      const isArchived = typeof planName === 'string' && planName.includes('(Archived)');
+
+      if (isArchived) {
+        return h('div', { class: 'flex items-center gap-2' }, [
+          h('span', {}, planName.replace(' (Archived)', '')),
+          h(Badge, { variant: 'outline', class: 'text-xs bg-gray-100 text-gray-700' }, () => 'Archived')
+        ]);
+      }
+
       return h('div', {}, planName);
     },
   },

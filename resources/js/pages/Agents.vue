@@ -27,7 +27,7 @@ import {
 } from '@/components/ui/dropdown-menu';
 import {
   Bot, Plus, Upload, MoreVertical, Edit, Play, Pause, Zap, CheckIcon, LineChart,
-  Rocket, CreditCard
+  Rocket, CreditCard, CircleAlert, RefreshCcw, WifiOff
 } from 'lucide-vue-next';
 import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert';
 
@@ -61,6 +61,7 @@ const props = defineProps<{
   agents?: Agent[];
   subscription?: any;
   hasActiveSubscription?: boolean;
+  connectionError?: boolean;
   flash?: {
     agent?: Agent;
     error?: string;
@@ -88,6 +89,14 @@ onMounted(() => {
   if (props.flash?.error) {
     toast.error('Error', {
       description: props.flash.error
+    });
+  }
+
+  // Check if there's a connection error
+  if (props.connectionError) {
+    toast.error('Connection Error', {
+      description: 'Unable to connect to payment service. Agent creation and management are unavailable until connection is restored.',
+      duration: 10000 // Show for 10 seconds
     });
   }
 });
@@ -274,6 +283,15 @@ const createNewAgent = () => {
           description: errors.message || 'You have reached your plan\'s agent limit. Please upgrade to create more agents.'
         });
         router.visit(route('billing'));
+        return;
+      }
+
+      // Check if this is a connection error
+      if (errors.connection_error) {
+        toast.error('Connection Error', {
+          description: errors.message || 'Unable to connect to payment service. Agent creation is unavailable until connection is restored.',
+          duration: 10000 // Show for 10 seconds
+        });
         return;
       }
 
@@ -630,6 +648,27 @@ const formatLastActive = (agent: Agent | null): string => {
             <Skeleton class="h-20 w-full" />
             <Skeleton class="h-20 w-full" />
             <Skeleton class="h-20 w-full" />
+          </div>
+          <div v-else-if="connectionError" class="text-center py-8">
+            <div class="mx-auto w-16 h-16 rounded-full bg-red-100 dark:bg-red-900/30 flex items-center justify-center mb-4">
+              <WifiOff class="h-8 w-8 text-red-600 dark:text-red-400" />
+            </div>
+            <h3 class="text-lg font-medium mb-2">Connection Error</h3>
+            <p class="text-sm text-muted-foreground mb-6 max-w-md mx-auto">
+              Unable to connect to payment service. Agent creation and management are unavailable until connection is restored.
+              Please check your internet connection and try again.
+            </p>
+            <Alert class="max-w-md mx-auto mb-6 text-left border-2 border-red-400 dark:border-red-600 bg-red-50 dark:bg-red-900/20">
+              <CircleAlert class="h-4 w-4 text-red-600 dark:text-red-400" />
+              <AlertTitle class="text-red-800 dark:text-red-300">Connection Required</AlertTitle>
+              <AlertDescription class="text-red-700 dark:text-red-400">
+                An internet connection is required to verify your subscription status and manage agents.
+              </AlertDescription>
+            </Alert>
+            <Button @click="window.location.reload()" class="px-6">
+              <RefreshCcw class="mr-2 h-4 w-4" />
+              Refresh Page
+            </Button>
           </div>
           <div v-else-if="!agents.length && !hasActiveSubscription" class="text-center py-8">
             <div class="mx-auto w-16 h-16 rounded-full bg-amber-100 dark:bg-amber-900/30 flex items-center justify-center mb-4">

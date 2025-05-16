@@ -15,11 +15,11 @@ import {
 } from '@/components/ui/dropdown-menu';
 import {
   Check, X, CreditCard, Zap, Users, Bot, Database, LineChart, Shield,
-  Sun, Moon, Laptop, Menu
+  Sun, Moon, Laptop, Menu, AlertCircle, RefreshCw
 } from 'lucide-vue-next';
 
 import { Toaster } from '@/components/ui/sonner'
-import AdBanner from '@/components/AdBanner.vue';
+import AdDisplay from '@/components/AdDisplay.vue';
 
 // Get page props
 const page = usePage();
@@ -288,13 +288,9 @@ const calculateSavings = (monthlyPrice: number, yearlyPrice: number): number => 
   <Toaster />
   <Head title="Pricing - Rill Technologies" />
 
-  <!-- Ad Banner -->
-  <AdBanner
-    position="left"
-    adId="pricing-ad-1"
-    adUrl="http://localhost:8000/dashboard"
-    adImageUrl="/ads/ad2.png"
-    adText="Premium Offer"
+  <!-- Ads for Pricing page -->
+  <AdDisplay
+    page="pricing"
   />
 
   <div class="bg-gray-900 min-h-screen">

@@ -32,19 +32,53 @@ const isActive = computed(() => (href: string) => {
     <SidebarGroup class="px-2 py-0">
         <SidebarGroupLabel>Platform</SidebarGroupLabel>
         <SidebarMenu>
-            <SidebarMenuItem v-for="item in items" :key="item.title">
-                <SidebarMenuButton
-                    as-child
-                    :is-active="isActive(item.href)"
-                    :tooltip="item.title"
-                    :class="isActive(item.href) ? 'active-sidebar-item' : ''"
-                >
-                    <Link :href="item.href">
-                        <component :is="item.icon" />
-                        <span>{{ item.title }}</span>
-                    </Link>
-                </SidebarMenuButton>
-            </SidebarMenuItem>
+            <template v-for="item in items" :key="item.title">
+                <!-- Regular menu item without children -->
+                <SidebarMenuItem v-if="!item.children">
+                    <SidebarMenuButton
+                        as-child
+                        :is-active="isActive(item.href)"
+                        :tooltip="item.title"
+                        :class="isActive(item.href) ? 'active-sidebar-item' : ''"
+                    >
+                        <Link :href="item.href">
+                            <component :is="item.icon" />
+                            <span>{{ item.title }}</span>
+                        </Link>
+                    </SidebarMenuButton>
+                </SidebarMenuItem>
+
+                <!-- Menu item with children -->
+                <SidebarMenuItem v-else>
+                    <SidebarMenuButton
+                        as-child
+                        :is-active="item.children.some(child => isActive(child.href))"
+                        :tooltip="item.title"
+                        :class="item.children.some(child => isActive(child.href)) ? 'active-sidebar-item' : ''"
+                    >
+                        <Link :href="item.href">
+                            <component :is="item.icon" />
+                            <span>{{ item.title }}</span>
+                        </Link>
+                    </SidebarMenuButton>
+
+                    <!-- Submenu items -->
+                    <SidebarMenu v-if="item.children && item.children.length > 0" class="pl-6 mt-1">
+                        <SidebarMenuItem v-for="child in item.children" :key="child.title">
+                            <SidebarMenuButton
+                                as-child
+                                :is-active="isActive(child.href)"
+                                :tooltip="child.title"
+                                :class="isActive(child.href) ? 'active-sidebar-item' : ''"
+                            >
+                                <Link :href="child.href">
+                                    <span>{{ child.title }}</span>
+                                </Link>
+                            </SidebarMenuButton>
+                        </SidebarMenuItem>
+                    </SidebarMenu>
+                </SidebarMenuItem>
+            </template>
         </SidebarMenu>
     </SidebarGroup>
 </template>
